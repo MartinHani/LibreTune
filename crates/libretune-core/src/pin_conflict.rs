@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Detect duplicate ECU pin assignments across INI constants.
 //!
 //! rusEFI-family firmwares reject overlapping pin uses with a Settings Error after
@@ -56,7 +57,12 @@ impl PinConflictReport {
 
 /// True when this constant looks like a pin selector (not a PinMode / boolean).
 pub fn is_pin_assignment_constant(constant: &Constant) -> bool {
-    if constant.data_type != DataType::Bits || constant.bit_options.len() < 3 {
+    // A [PcVariables] entry lives only in the PC (list pickers, display
+    // helpers) and is never written to the ECU, so it cannot occupy a pin.
+    if constant.is_pc_variable
+        || constant.data_type != DataType::Bits
+        || constant.bit_options.len() < 3
+    {
         return false;
     }
     let name = constant.name.to_ascii_lowercase();
@@ -256,6 +262,35 @@ mod tests {
             report.conflicts[0].constants,
             vec!["fuelPumpPin".to_string(), "gppwm1_pin".to_string()]
         );
+    }
+
+    #[test]
+    fn pc_variables_are_never_pins() {
+        // HaniCore's trouble-code list pickers: [PcVariables] bits whose texts
+        // mention "output"/"injector" and are padded with "INVALID". All three
+        // sit at "-" and were reported as three outputs on one pin.
+        let opts = [
+            "-",
+            "outputs not live",
+            "P0201 - Injector 1 circuit",
+            "P0351 - Ignition coil A",
+            "a",
+            "b",
+            "c",
+            "INVALID",
+        ];
+        let mut consts: Vec<Constant> = ["hcDtcList", "hcDtcRowList", "hcDtcDbwList"]
+            .iter()
+            .map(|n| pin_const(n, &opts))
+            .collect();
+        // the control: as ECU constants the heuristic does see them
+        let def = def_with(consts.clone());
+        assert!(detect_pin_conflicts(&def, |_, _| Some(0)).has_conflicts());
+        for c in &mut consts {
+            c.is_pc_variable = true;
+        }
+        let def = def_with(consts);
+        assert!(!detect_pin_conflicts(&def, |_, _| Some(0)).has_conflicts());
     }
 
     #[test]
