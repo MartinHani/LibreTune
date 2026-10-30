@@ -1,5 +1,12 @@
 # LibreTune
 
+> **This is the HaniCore K-line build, an unofficial fork of
+> [RallyPat/LibreTune](https://github.com/RallyPat/LibreTune).** It adds
+> native K-line support (KKL / VAG-COM cable, direct or through the car's OBD
+> socket) for [HaniCore](https://github.com/MartinHani/HaniCore) ECUs. What
+> changed and why: [FORK.md](FORK.md). Report problems with this build to
+> HaniCore, not to LibreTune. The rest of this README is upstream's.
+
 [![License: GPL v2](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 [![CI](https://github.com/RallyPat/LibreTune/actions/workflows/ci.yml/badge.svg)](https://github.com/RallyPat/LibreTune/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/RallyPat/LibreTune?label=stable)](https://github.com/RallyPat/LibreTune/releases/latest)

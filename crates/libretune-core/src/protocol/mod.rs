@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Serial Protocol Communication
 //!
 //! Implements the Megasquirt/Speeduino serial protocol for ECU communication.
@@ -10,6 +11,7 @@ pub mod commands;
 mod connection;
 pub mod discovery;
 mod error;
+pub mod kline;
 mod packet;
 mod response_code;
 pub mod serial;
@@ -27,6 +29,7 @@ pub use connection::{
     Connection, ConnectionConfig, ConnectionState, ConnectionType, RuntimeFetch, RuntimePacketMode,
 };
 pub use error::ProtocolError;
+pub use kline::{KLineChannel, KLineMode};
 pub use packet::{EnvelopeOrder, Packet, PacketBuilder};
 pub use response_code::ResponseCode;
 pub use serial::{clear_buffers, configure_port, list_ports, open_port, PortInfo};

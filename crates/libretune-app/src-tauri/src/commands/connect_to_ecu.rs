@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! connect_to_ecu command (extracted from lib.rs).
 
 use crate::commands::metrics::start_metrics_task;
@@ -33,6 +34,8 @@ pub async fn connect_to_ecu(
 
     let conn_type = match connection_type.as_deref() {
         Some(t) if t.eq_ignore_ascii_case("tcp") => ConnectionType::Tcp,
+        Some(t) if t.eq_ignore_ascii_case("kline") => ConnectionType::KLine,
+        Some(t) if t.eq_ignore_ascii_case("klinekwp") => ConnectionType::KLineKwp,
         _ => ConnectionType::Serial,
     };
 

@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { invoke } from "@tauri-apps/api/core";
 import {
   SaveDialog,
@@ -98,8 +99,8 @@ export interface DialogOverlaysProps {
   selectedPort: string;
   baudRate: number;
   timeoutMs: number;
-  connectionType: 'Serial' | 'Tcp';
-  setConnectionType: (v: 'Serial' | 'Tcp') => void;
+  connectionType: 'Serial' | 'Tcp' | 'KLine' | 'KLineKwp';
+  setConnectionType: (v: 'Serial' | 'Tcp' | 'KLine' | 'KLineKwp') => void;
   tcpHost: string;
   setTcpHost: (v: string) => void;
   tcpPort: number;
@@ -130,7 +131,7 @@ export interface DialogOverlaysProps {
   connectWizardEcu: (params: {
     port: string;
     baud: number;
-    connectionType: 'Serial' | 'Tcp';
+    connectionType: 'Serial' | 'Tcp' | 'KLine' | 'KLineKwp';
     tcpHost: string;
     tcpPort: number;
   }) => Promise<void>;

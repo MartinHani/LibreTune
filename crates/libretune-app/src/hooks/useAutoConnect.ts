@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ConnectionStatus, CurrentProject } from '../types/app';
@@ -13,7 +14,7 @@ export interface ConnectOptions {
   /** Override the baud rate for this attempt (defaults to UI selection). */
   baudRate?: number;
   /** Override the connection type for this attempt (defaults to UI selection). */
-  connectionType?: 'Serial' | 'Tcp';
+  connectionType?: 'Serial' | 'Tcp' | 'KLine' | 'KLineKwp';
   /** Override the TCP host for this attempt (defaults to UI selection). */
   tcpHost?: string;
   /** Override the TCP port for this attempt (defaults to UI selection). */

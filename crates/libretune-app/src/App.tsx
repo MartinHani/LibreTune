@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle } from "lucide-react";
@@ -202,7 +203,7 @@ function AppContent() {
   const [lastSerialPort, setLastSerialPort] = useState<string | null>(null);
   const [baudRate, setBaudRate] = useState(115200);
   const [timeoutMs, setTimeoutMs] = useState(2000);
-  const [connectionType, setConnectionType] = useState<'Serial' | 'Tcp'>("Serial");
+  const [connectionType, setConnectionType] = useState<'Serial' | 'Tcp' | 'KLine' | 'KLineKwp'>("Serial");
   const [tcpHost, setTcpHost] = useState("localhost");
   const [tcpPort, setTcpPort] = useState(29001);
 
@@ -1230,7 +1231,7 @@ function AppContent() {
   async function connectWizardEcu(params: {
     port: string;
     baud: number;
-    connectionType: 'Serial' | 'Tcp';
+    connectionType: 'Serial' | 'Tcp' | 'KLine' | 'KLineKwp';
     tcpHost: string;
     tcpPort: number;
   }) {

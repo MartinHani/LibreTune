@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 /**
  * State model for the "Connect ECU" wizard (Phase 1 — navigation skeleton).
  *
@@ -9,7 +10,7 @@
  */
 
 /** How the user connects to the ECU. */
-export type WizardTransport = "usb" | "bluetooth" | "wifi" | "offline";
+export type WizardTransport = "usb" | "bluetooth" | "kline" | "wifi" | "offline";
 
 /** The ordered steps of the wizard. */
 export type WizardStep = "transport" | "params" | "connect" | "resolveIni" | "name";
@@ -27,13 +28,29 @@ export function wizardSteps(transport: WizardTransport | null): WizardStep[] {
   return ["transport", "params", "connect", "resolveIni", "name"];
 }
 
-/** Whether a transport talks over a serial port (USB or a Bluetooth COM port). */
+/** Whether a transport talks over a serial port (USB, a Bluetooth COM port, or a K-line cable). */
 export function isSerialTransport(transport: WizardTransport | null): boolean {
-  return transport === "usb" || transport === "bluetooth";
+  return transport === "usb" || transport === "bluetooth" || transport === "kline";
 }
 
 /** Common baud rates offered for serial connections. */
 export const WIZARD_BAUD_RATES = [9600, 38400, 57600, 115200, 230400, 460800, 921600];
+
+/** Rates a K-line ECU can be asked for (direct, or negotiated through KWP). */
+export const WIZARD_KLINE_BAUD_RATES = [57600, 115200, 124800];
+
+/**
+ * The backend connection type for a transport. A K-line cable is either on
+ * the ECU's K-line pin, or in the car's OBD socket (KWP wake-up first).
+ */
+export function wizardConnectionType(
+  transport: WizardTransport | null,
+  klineObd: boolean,
+): "Serial" | "Tcp" | "KLine" | "KLineKwp" {
+  if (transport === "wifi") return "Tcp";
+  if (transport === "kline") return klineObd ? "KLineKwp" : "KLine";
+  return "Serial";
+}
 
 /** Connection parameters collected on the "params" step. */
 export interface WizardConnectionParams {
@@ -165,6 +182,8 @@ export function transportLabel(t: WizardTransport): string {
       return "USB / Serial";
     case "bluetooth":
       return "Bluetooth";
+    case "kline":
+      return "K-line (KKL / VAG-COM cable)";
     case "wifi":
       return "WiFi / Network (TCP)";
     case "offline":

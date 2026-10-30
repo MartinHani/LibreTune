@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -19,6 +20,8 @@ import {
   deriveSpeeduinoIniUrl,
   sanitizeSignature,
   WIZARD_BAUD_RATES,
+  WIZARD_KLINE_BAUD_RATES,
+  wizardConnectionType,
   type WizardIniMatch,
 } from "../../utils/connectEcuWizard";
 
@@ -58,7 +61,7 @@ interface ConnectEcuWizardProps {
   onConnect: (params: {
     port: string;
     baud: number;
-    connectionType: "Serial" | "Tcp";
+    connectionType: "Serial" | "Tcp" | "KLine" | "KLineKwp";
     tcpHost: string;
     tcpPort: number;
   }) => Promise<void>;
@@ -87,6 +90,8 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
   const [baud, setBaud] = useState(115200);
   const [host, setHost] = useState("");
   const [tcpPort, setTcpPort] = useState(29000);
+  // K-line: cable in the car's OBD socket (KWP wake-up) instead of on the ECU pin
+  const [klineObd, setKlineObd] = useState(false);
 
   const params = { port, baud, host, tcpPort };
 
@@ -142,7 +147,7 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
     await invoke("disconnect_ecu").catch(() => {});
     try {
       const result = await invoke<ConnectResult>("connect_to_ecu", {
-        connectionType: transport === "wifi" ? "Tcp" : "Serial",
+        connectionType: wizardConnectionType(transport, klineObd),
         portName: isSerialTransport(transport) ? port : "",
         baudRate: baud,
         tcpHost: transport === "wifi" ? host : null,
@@ -170,13 +175,13 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
   // Retry button bypasses this guard by calling connectAndDetect() directly.
   const connectTriedForRef = useRef<string | null>(null);
   useEffect(() => {
-    const attemptKey = `${transport}|${port}|${baud}|${host}|${tcpPort}`;
+    const attemptKey = `${transport}|${klineObd}|${port}|${baud}|${host}|${tcpPort}`;
     if (step === "connect" && connectTriedForRef.current !== attemptKey) {
       connectTriedForRef.current = attemptKey;
       void connectAndDetect();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, transport, port, baud, host, tcpPort]);
+  }, [step, transport, klineObd, port, baud, host, tcpPort]);
 
   /** A downloaded/derived .ini is a filesystem path; re-importing it (idempotent
    * by signature) gets the repository ID `create_project` needs. */
@@ -361,7 +366,7 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
           await onConnect({
             port: isSerialTransport(transport) ? port : "",
             baud,
-            connectionType: transport === "wifi" ? "Tcp" : "Serial",
+            connectionType: wizardConnectionType(transport, klineObd),
             tcpHost: host,
             tcpPort,
           }).catch(() => {
@@ -381,7 +386,7 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
     }
   }
 
-  const transports: WizardTransport[] = ["usb", "bluetooth", "wifi", "offline"];
+  const transports: WizardTransport[] = ["usb", "bluetooth", "kline", "wifi", "offline"];
 
   return (
     <Dialog open={isOpen} onClose={handleClose} title="Connect ECU / New Project" size="md">
@@ -401,7 +406,11 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
                   type="radio"
                   name="wizard-transport"
                   checked={transport === t}
-                  onChange={() => setTransport(t)}
+                  onChange={() => {
+                    setTransport(t);
+                    // a K-line ECU boots at 57600; keep the rate one it supports
+                    if (t === "kline" && !WIZARD_KLINE_BAUD_RATES.includes(baud)) setBaud(57600);
+                  }}
                 />
                 <span>{transportLabel(t)}</span>
               </label>
@@ -416,6 +425,18 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
                 Bluetooth ECUs appear as a serial (COM) port — pair the device in your OS
                 first, then pick its port below.
               </p>
+            )}
+            {transport === "kline" && (
+              <div>
+                <label style={{ display: "block", marginBottom: "0.25rem" }}>Cable connected to</label>
+                <select
+                  value={klineObd ? "obd" : "pin"}
+                  onChange={(e) => setKlineObd(e.target.value === "obd")}
+                >
+                  <option value="pin">ECU K-line pin (direct)</option>
+                  <option value="obd">Car OBD socket (KWP wake-up)</option>
+                </select>
+              </div>
             )}
             <div>
               <label style={{ display: "block", marginBottom: "0.25rem" }}>Port</label>
@@ -443,7 +464,7 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
             <div>
               <label style={{ display: "block", marginBottom: "0.25rem" }}>Baud rate</label>
               <select value={baud} onChange={(e) => setBaud(parseInt(e.target.value))}>
-                {WIZARD_BAUD_RATES.map((b) => (
+                {(transport === "kline" ? WIZARD_KLINE_BAUD_RATES : WIZARD_BAUD_RATES).map((b) => (
                   <option key={b} value={b}>
                     {b}
                   </option>

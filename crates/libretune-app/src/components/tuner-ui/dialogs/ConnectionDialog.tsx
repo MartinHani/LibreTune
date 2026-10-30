@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useEffect, useRef } from 'react';
 import { RotateCw } from 'lucide-react';
 import { Dialog, Button } from '../../common';
@@ -14,8 +15,8 @@ interface ConnectionDialogProps extends DialogProps {
   baudRate: number;
   timeoutMs: number;
   // Connection type and TCP settings
-  connectionType?: 'Serial' | 'Tcp';
-  onConnectionTypeChange?: (type: 'Serial' | 'Tcp') => void;
+  connectionType?: 'Serial' | 'Tcp' | 'KLine' | 'KLineKwp';
+  onConnectionTypeChange?: (type: 'Serial' | 'Tcp' | 'KLine' | 'KLineKwp') => void;
   tcpHost?: string;
   onTcpHostChange?: (host: string) => void;
   tcpPort?: number;
@@ -122,10 +123,33 @@ export function ConnectionDialog({
                   />
                   <span>TCP / WiFi (Sim)</span>
                 </label>
+                <label className="radio-label" style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: connected ? 'default' : 'pointer' }} title="KKL / VAG-COM K-line cable">
+                  <input
+                    type="radio"
+                    checked={connectionType === 'KLine' || connectionType === 'KLineKwp'}
+                    onChange={() => onConnectionTypeChange?.('KLine')}
+                    disabled={connected}
+                  />
+                  <span>K-line</span>
+                </label>
             </div>
           </div>
-          
-          {connectionType === 'Serial' ? (
+
+          {(connectionType === 'KLine' || connectionType === 'KLineKwp') && (
+            <div className="dialog-form-group">
+              <label>Cable connected to</label>
+              <select
+                value={connectionType}
+                onChange={(e) => onConnectionTypeChange?.(e.target.value as 'KLine' | 'KLineKwp')}
+                disabled={connected}
+              >
+                <option value="KLine">ECU K-line pin (direct)</option>
+                <option value="KLineKwp">Car OBD socket (KWP wake-up)</option>
+              </select>
+            </div>
+          )}
+
+          {connectionType !== 'Tcp' ? (
             <>
               <div className="dialog-form-group">
                 <label>Serial Port</label>
@@ -164,6 +188,7 @@ export function ConnectionDialog({
                   onChange={(e) => onBaudChange(Number(e.target.value))}
                   disabled={connected}
                 >
+                  {connectionType !== 'Serial' && <option value={124800}>124800</option>}
                   <option value={115200}>115200</option>
                   <option value={57600}>57600</option>
                   <option value={38400}>38400</option>

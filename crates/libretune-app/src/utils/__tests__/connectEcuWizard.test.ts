@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { describe, it, expect } from "vitest";
 import {
   wizardSteps,
@@ -12,6 +13,7 @@ import {
   deriveOnlineIniUrl,
   deriveSpeeduinoIniUrl,
   sanitizeSignature,
+  wizardConnectionType,
   type WizardStep,
   type WizardIniMatch,
 } from "../connectEcuWizard";
@@ -66,6 +68,21 @@ describe("isSerialTransport", () => {
     expect(isSerialTransport("bluetooth")).toBe(true);
     expect(isSerialTransport("wifi")).toBe(false);
     expect(isSerialTransport("offline")).toBe(false);
+  });
+
+  it("treats a K-line cable as serial", () => {
+    expect(isSerialTransport("kline")).toBe(true);
+  });
+});
+
+describe("wizardConnectionType", () => {
+  it("maps the transport (and the K-line cable's place) to the backend type", () => {
+    expect(wizardConnectionType("usb", false)).toBe("Serial");
+    expect(wizardConnectionType("wifi", false)).toBe("Tcp");
+    expect(wizardConnectionType("kline", false)).toBe("KLine");
+    expect(wizardConnectionType("kline", true)).toBe("KLineKwp");
+    // the OBD choice only means something for a K-line cable
+    expect(wizardConnectionType("usb", true)).toBe("Serial");
   });
 });
 

@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Connection management
 //!
 //! Handles the connection lifecycle and command execution with the ECU.
@@ -8,6 +9,7 @@ use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use super::calibration::{self, CalibrationTable};
+use super::kline::{KLineChannel, KLineMode};
 use super::stream::{CommunicationChannel, SerialChannel, TcpChannel};
 use super::{
     commands::{BurnParams, ReadMemoryParams, WriteMemoryParams},
@@ -334,6 +336,10 @@ pub enum ConnectionState {
 pub enum ConnectionType {
     Serial,
     Tcp,
+    /// KKL cable on the ECU's K-line pin: echo filter + rate hunt + keepalive.
+    KLine,
+    /// KKL cable in the car's OBD socket: 5-baud/KWP entry, then as `KLine`.
+    KLineKwp,
 }
 
 /// Connection runtime packet selection override
@@ -705,14 +711,41 @@ impl Connection {
 
         self.state = ConnectionState::Connecting;
 
+        // A K-line cable echoes every byte sent (filterEchoBytes in the INI
+        // asks for the same filter on a plain serial connection).
+        let kline = match self.config.connection_type {
+            ConnectionType::KLine => Some(KLineMode::Direct),
+            ConnectionType::KLineKwp => Some(KLineMode::Kwp),
+            ConnectionType::Serial
+                if self
+                    .protocol_settings
+                    .as_ref()
+                    .is_some_and(|p| p.filter_echo_bytes) =>
+            {
+                Some(KLineMode::EchoOnly)
+            }
+            _ => None,
+        };
+
         // Open communication channel
         let mut channel: Box<dyn CommunicationChannel> = match self.config.connection_type {
-            ConnectionType::Serial => {
+            ConnectionType::Serial | ConnectionType::KLine | ConnectionType::KLineKwp => {
                 // Open serial port
                 let mut port = open_port(&self.config.port_name, Some(self.config.baud_rate))?;
                 configure_port(port.as_mut())?;
                 clear_buffers(port.as_mut())?;
-                Box::new(SerialChannel::new(port))
+                match kline {
+                    Some(mode) => {
+                        tracing::info!(
+                            "Connecting over K-line ({:?}) on {} at {} baud",
+                            mode,
+                            self.config.port_name,
+                            self.config.baud_rate
+                        );
+                        Box::new(KLineChannel::open(port, mode, self.config.baud_rate)?)
+                    }
+                    None => Box::new(SerialChannel::new(port)),
+                }
             }
             ConnectionType::Tcp => {
                 let host = self.config.tcp_host.as_deref().unwrap_or("localhost");
@@ -740,6 +773,13 @@ impl Connection {
             .as_ref()
             .map(|p| p.delay_after_port_open)
             .unwrap_or(1000);
+        // A K-line entry has already found the ECU; a pause here would only
+        // run into the session's idle timeout.
+        let port_open_delay = if matches!(kline, Some(KLineMode::Direct | KLineMode::Kwp)) {
+            0
+        } else {
+            port_open_delay
+        };
         tracing::debug!(
             "connect: waiting {}ms after port open for ECU stabilization (from INI)",
             port_open_delay

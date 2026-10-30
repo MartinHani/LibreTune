@@ -13,6 +13,36 @@ relevant.
 
 ## [Unreleased]
 
+### 2026-10-30 — HaniCore fork: native K-line transport (KKL cable: direct pin or OBD socket / KWP)
+
+*(This entry belongs to the HaniCore K-line fork, not to upstream LibreTune —
+see `FORK.md`.)*
+
+ECUs on a K-line (e.g. Bosch ME7 boards running HaniCore) were unreachable
+with an ordinary KKL cable: the line echoes every byte the host sends, and
+in a car the ECU must first be woken through the OBD socket.
+
+#### Added
+
+- `ConnectionType::KLine` and `ConnectionType::KLineKwp`
+  (`protocol/kline.rs`, `KLineChannel`): echo filter matched by content (a
+  lost echo hands its bytes back), rate hunt on the direct pin, 5-baud +
+  ISO 14230 handshake + IDENTIFY + GOFAST (refused rate → 57600 / 124800)
+  through the OBD socket, keepalive on a quiet line and automatic re-entry
+  when the ECU stops answering (power cycle). Connection dialog and the
+  Connect-ECU wizard: a **K-line** mode with a "Cable connected to: ECU pin /
+  car OBD socket" choice; 124800 baud offered for it.
+- `filterEchoBytes = true` in an INI now applies the echo filter to a plain
+  serial connection (it was parsed but unused).
+- Tests: 10 unit tests against a simulated cable + ECU; a dialog test.
+
+#### Fixed
+
+- Pin-conflict check: `[PcVariables]` are no longer taken for pin
+  selectors. They are never written to the ECU, but list pickers whose texts
+  mention "output"/"injector" (e.g. HaniCore's trouble-code lists) were
+  reported as several outputs on one pin before every Burn.
+
 ### 2026-10-30 — Nightly build fix: Tauri crate/npm version realignment + PR-time drift guard (issue #345)
 
 The Oct 24 nightly failed on all three platforms ~1s into `tauri build`:

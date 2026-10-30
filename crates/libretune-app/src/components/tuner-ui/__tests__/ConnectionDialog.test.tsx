@@ -1,3 +1,4 @@
+// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { render, screen, fireEvent } from '@testing-library/react';
 import { vi } from 'vitest';
 
@@ -197,5 +198,42 @@ describe('ConnectionDialog', () => {
     );
 
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('offers the K-line modes with the serial port and the 124800 rate', () => {
+    const onType = vi.fn();
+    const props = {
+      isOpen: true,
+      onClose: () => {},
+      ports: ['COM3'],
+      selectedPort: 'COM3',
+      baudRate: 124800,
+      timeoutMs: 2000,
+      connected: false,
+      connecting: false,
+      onPortChange: () => {},
+      onBaudChange: () => {},
+      onTimeoutChange: () => {},
+      onConnect: () => {},
+      onDisconnect: () => {},
+      onRefreshPorts: () => {},
+      onConnectionTypeChange: onType,
+    };
+    const { rerender } = render(<ConnectionDialog {...props} connectionType={'Serial'} />);
+    // plain serial: no K-line-only rate
+    expect(document.querySelector('option[value="124800"]')).toBeNull();
+
+    // one K-line mode ...
+    fireEvent.click(screen.getByText('K-line'));
+    expect(onType).toHaveBeenCalledWith('KLine');
+
+    rerender(<ConnectionDialog {...props} connectionType={'KLine'} />);
+    // ... with the cable's place as a separate choice
+    const where = document.querySelector('option[value="KLineKwp"]')!.parentElement as HTMLSelectElement;
+    fireEvent.change(where, { target: { value: 'KLineKwp' } });
+    expect(onType).toHaveBeenCalledWith('KLineKwp');
+    // the serial port picker stays, and the K-line rate is offered
+    expect(screen.getByText('Serial Port')).toBeInTheDocument();
+    expect(document.querySelector('option[value="124800"]')).not.toBeNull();
   });
 });
