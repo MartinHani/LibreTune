@@ -38,6 +38,7 @@ Upstream `RallyPat/LibreTune` `master` at commit `cc5cf23` (2026-10-30).
 | 2026-10-30 | `crates/libretune-core/src/pin_conflict.rs` | `[PcVariables]` are never treated as pin selectors (false "pin conflict" before every Burn on HaniCore's trouble-code list pickers) |
 | 2026-10-30 | `crates/libretune-app/src/components/tuner-ui/__tests__/ConnectionDialog.test.tsx`, `src/utils/__tests__/connectEcuWizard.test.ts` | tests for the above |
 | 2026-10-31 | `crates/libretune-app/src-tauri/tauri.conf.json` | version `0.1.0-hanicore.1`, identifier `com.hanicore.libretune` (its own settings, so it does not collide with an official LibreTune install; projects in `Documents\LibreTuneProjects` are shared), window title marks the build unofficial |
+| 2026-10-31 | `crates/libretune-app/src/hooks/useEcuEventListeners.ts` | window title "LibreTune (HaniCore build)" |
 | 2026-10-31 | `README.md`, `CHANGELOG.md`, `FORK.md` | this notice and the change log |
 
 Each modified source file also carries a one-line notice at its top.

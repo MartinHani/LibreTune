@@ -1,3 +1,4 @@
+// Modified 2026-10-31 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
@@ -52,7 +53,7 @@ export function useEcuEventListeners(deps: UseEcuEventListenersDeps) {
 
   // Update window title with project name
   useEffect(() => {
-    const base = "LibreTune";
+    const base = "LibreTune (HaniCore build)"; // unofficial fork: say so
     if (currentProject) {
       const title = `${currentProject.name} — ${base}`;
       document.title = title;
