@@ -13,6 +13,54 @@ relevant.
 
 ## [Unreleased]
 
+### 2026-11-02 — HaniCore fork: K-line writes, page refresh, indicators, project handling
+
+*(This entry belongs to the HaniCore K-line fork, not to upstream LibreTune —
+see `FORK.md`.)*
+
+#### Added
+- `[EventTriggers] triggeredPageRefresh`: when the ECU raises the named channel (after an
+  automatic calibration, a base tune or a sensor Grab), the page is read again and open
+  dialogs show the new values without a reconnect.
+
+#### Fixed
+- K-line table writes go in 64-byte frames and are read back: larger frames did not fit the
+  ECU's receive buffer and were dropped, so VE and ignition edits did not arrive.
+- Indicator lights evaluated with an own expression parser; the release build's
+  content-security policy blocked the old one and every comparison read false.
+- `{ TEXT bitStringValue(list, x) }` labels interpolate; `readout = gaugeName` resolves.
+- New project: no Difference Report against an empty cache; "Ignore" keeps the pages.
+- K-line: 57600 as the default and the direct fallback; the wizard's detect step no longer
+  asks about an INI mismatch; the wizard offers the last port that worked.
+- Signatures with the same layout id match only with the same board name.
+- Switching projects updates the header and window title; a connect stores the baud rate it
+  used; the connect dialog remembers the connection type.
+- Re-importing an INI with a known signature replaces it.
+- Number fields: no floating-point noise; leaving a field untouched writes nothing.
+- Window titles show the menu label, not the INI's internal name.
+- The Burn window closes after a successful Burn, and the project's tune is saved then (the
+  next connect showed a Difference Report against the old file).
+
+### 2026-11-01 — HaniCore fork: INI scale/translate order
+
+*(This entry belongs to the HaniCore K-line fork, not to upstream LibreTune —
+see `FORK.md`.)*
+
+#### Fixed
+- A value is `(raw + translate) * scale` and is stored as `value / scale - translate`,
+  the TunerStudio INI rule. LibreTune used `raw * scale + translate`, the same only when
+  scale is 1: a field stored as `10 * C + 10000` read 143.2 C as -8856.8, and choosing a
+  sensor from a list wrote 65535 to the ECU. Constants, output channels, action scripts,
+  the simulator codecs and the dashboard designer's default gauge range.
+- Tune merge wrote only the low byte of a multi-byte field.
+- Writing one name of shared storage (an array and its per-element scalars) leaves no stale
+  copy of the other names in the open tune.
+- A curve write the ECU did not take is reported instead of only logged.
+- A tune saved by an earlier LibreTune holds those fields in the old rule (143.2 C saved as
+  -8856.8); it is converted once on load, and new saves are marked (`valueRule`).
+- A preset dropdown (`settingSelector`) now refreshes the curve or table shown beside it;
+  it kept showing the previous values until the tune was reloaded.
+
 ### 2026-10-30 — HaniCore fork: native K-line transport (KKL cable: direct pin or OBD socket / KWP)
 
 *(This entry belongs to the HaniCore K-line fork, not to upstream LibreTune —

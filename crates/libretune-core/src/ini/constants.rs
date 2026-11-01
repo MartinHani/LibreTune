@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Constants section parser
 //!
 //! Parses the [Constants] section which defines editable ECU parameters.
@@ -164,9 +165,15 @@ impl Constant {
         }
     }
 
-    /// Convert a raw value to display value
+    /// Convert a raw value to display value.
+    ///
+    /// The INI format's rule is `userValue = (msValue + translate) * scale`
+    /// (stated in the header of Speeduino's own INI): translate is in RAW
+    /// units, applied before the scale. `raw * scale + translate` agrees only
+    /// when scale is 1 - a field stored as `10 * degC + 10000` (scale 0.1,
+    /// translate -10000) read 11432 as -8856.8 instead of 143.2 C.
     pub fn raw_to_display(&self, raw: f64) -> f64 {
-        raw * self.scale + self.translate
+        (raw + self.translate) * self.scale
     }
 
     /// Convert a display value to raw value
@@ -192,7 +199,7 @@ impl Constant {
         } else {
             display
         };
-        (value - self.translate) / self.scale
+        value / self.scale - self.translate
     }
 
     /// Check if a display value is within allowed range
@@ -493,6 +500,33 @@ mod tests {
 
         assert!((c.raw_to_display(147.0) - 14.7).abs() < 0.01);
         assert!((c.display_to_raw(14.7) - 147.0).abs() < 0.01);
+    }
+
+    /// translate is in RAW units, applied before the scale:
+    /// `cltSensVal = array, U16, 1184, [16], "C", 0.1, -10000, -50, 200, 1`
+    /// stores 143.2 C as 11432. The old `raw * scale + translate` showed it
+    /// as -8856.8 and wrote 143.2 as 101432 - saturated to 65535 on the ECU.
+    #[test]
+    fn translate_is_applied_before_the_scale() {
+        let mut c = Constant::new("cltSensVal", 0, 1184, DataType::U16);
+        c.scale = 0.1;
+        c.translate = -10000.0;
+        c.min = -50.0;
+        c.max = 200.0;
+        c.range_resolved = true;
+        assert!((c.raw_to_display(11432.0) - 143.2).abs() < 1e-9);
+        assert!((c.display_to_raw(143.2) - 11432.0).abs() < 1e-6);
+        assert!((c.display_to_raw(-40.0) - 9600.0).abs() < 1e-6);
+
+        // ignMap = array, U08, 3838, [16x16], "deg", 0.5, -40, -20, 107.5, 1
+        let mut a = Constant::new("ignMap", 0, 3838, DataType::U08);
+        a.scale = 0.5;
+        a.translate = -40.0;
+        a.min = -20.0;
+        a.max = 107.5;
+        a.range_resolved = true;
+        assert!((a.raw_to_display(60.0) - 10.0).abs() < 1e-9);
+        assert!((a.display_to_raw(-20.0) - 0.0).abs() < 1e-9);
     }
 
     #[test]

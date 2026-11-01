@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Core INI file parser
 //!
 //! Handles the tokenization and section-by-section parsing of ECU INI definition files.
@@ -424,6 +425,19 @@ fn parse_ini_internal(content: &str, ctx: &mut IncludeContext) -> Result<EcuDefi
                     &mut state.current_help,
                 ),
                 "settingcontexthelp" => parse_setting_context_help(&mut definition, key, value),
+                "eventtriggers" => {
+                    if key.eq_ignore_ascii_case("triggeredPageRefresh") {
+                        // `1, { presetPageRefresh }` - the page is 1-based here
+                        if let Some((page, expr)) = value.split_once(',') {
+                            if let Ok(p) = page.trim().parse::<u8>() {
+                                let e = expr.trim().trim_start_matches('{').trim_end_matches('}');
+                                definition
+                                    .page_refresh_triggers
+                                    .push((p.saturating_sub(1), e.trim().to_string()));
+                            }
+                        }
+                    }
+                }
                 "frontpage" => parse_frontpage_entry(&mut definition, key, value),
                 "controllercommands" => parse_controller_command_entry(&mut definition, key, value),
                 "loggerdefinition" => {
@@ -497,6 +511,7 @@ fn parse_ini_internal(content: &str, ctx: &mut IncludeContext) -> Result<EcuDefi
     // Post-process menu items to fix types that couldn't be determined during initial parse
     // (e.g., help topics defined after menu section)
     post_process_menu_items(&mut definition);
+    post_process_readouts(&mut definition);
 
     // Resolve allocated sizes for TunerStudio dynamically sized arrays, then
     // fill table x_size/y_size (defaults / allocated) from those constants.
@@ -2067,6 +2082,28 @@ fn post_process_variable_substitution(def: &mut EcuDefinition) {
 
 /// Post-process menu items to fix types that couldn't be determined during initial parse
 /// This handles cases where help topics are defined after the Menu section
+/// Resolve `readout = someGauge` against [GaugeConfigurations]. Without it
+/// every readout panel of an INI written that way (rusEFI's, HaniCore's)
+/// came out empty: the live values beside the settings never showed.
+fn post_process_readouts(def: &mut EcuDefinition) {
+    for panel in def.readout_panels.values_mut() {
+        for r in &mut panel.readouts {
+            if !r.title.is_empty() {
+                continue;
+            }
+            if let Some(g) = def.gauges.get(&r.channel) {
+                r.channel = g.channel.clone();
+                r.title = g.title.clone();
+                r.units = g.units.clone();
+                r.digits = g.digits;
+                r.precision = g.digits;
+            } else {
+                r.title = r.channel.clone();
+            }
+        }
+    }
+}
+
 fn post_process_menu_items(def: &mut EcuDefinition) {
     for menu in &mut def.menus {
         post_process_items(
@@ -2684,7 +2721,19 @@ fn parse_user_defined_entry(
             if let Some(panel_name) = current_readout_panel {
                 if let Some(panel) = def.readout_panels.get_mut(panel_name) {
                     let parts = split_ini_line(value);
-                    if parts.len() >= 2 {
+                    if parts.len() == 1 {
+                        // TunerStudio's form: `readout = someGauge`. The gauge
+                        // gives channel, title and units once every section
+                        // is read (post_process_readouts); until then the
+                        // gauge name holds the channel's place.
+                        panel.readouts.push(ReadoutDefinition {
+                            channel: parts[0].trim().to_string(),
+                            title: String::new(),
+                            units: String::new(),
+                            digits: 0,
+                            precision: 0,
+                        });
+                    } else if parts.len() >= 2 {
                         let channel = parts[0].trim().to_string();
                         let title = parts[1].trim_matches('"').to_string();
                         let units = parts

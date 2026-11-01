@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Action Recording and Playback System
 //!
 //! This module provides functionality to record, store, and replay ECU tuning actions.
@@ -264,9 +265,9 @@ impl ActionPlayer {
                                 if let Some((raw_min, raw_max)) = c.data_type.raw_range_bounds() {
                                     let scale = c.scale;
                                     let translate = c.translate;
-                                    // display = raw * scale + translate  =>  raw = (display - translate) / scale
+                                    // display = (raw + translate) * scale  =>  raw = display / scale - translate
                                     if scale.abs() > f64::MIN_POSITIVE {
-                                        let raw = (*new_value - translate) / scale;
+                                        let raw = *new_value / scale - translate;
                                         if raw < raw_min || raw > raw_max {
                                             errors.push(format!(
                                                 "Action {}: Value {} ({}) for constant '{}' outside storable range [raw {:.0}..{:.0}] for {:?}",

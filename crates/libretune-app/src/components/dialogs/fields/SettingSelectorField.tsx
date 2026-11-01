@@ -1,5 +1,7 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import type { DialogComponent } from '../types';
 import { useDialogValueSource } from '../DialogValueSource';
 
@@ -93,6 +95,11 @@ export function SettingSelectorField({
       return next;
     });
     onUpdate?.();
+    // A preset usually fills a curve or table shown beside it (HaniCore's
+    // sensor pickers fill the curve in the same dialog); those panels re-read
+    // their data only on tune:loaded, so without this they kept showing the
+    // old values although the ECU already held the new ones.
+    emit('tune:loaded', 'setting-selector').catch(() => {});
   };
 
   return (

@@ -1,4 +1,4 @@
-// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
+// Modified 2026-10-30/31, 2026-11-02 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle } from "lucide-react";
@@ -476,6 +476,9 @@ function AppContent() {
         if (settings.auto_burn_on_close !== undefined) setAutoBurnOnClose(settings.auto_burn_on_close);
         if (settings.status_bar_channels) setStatusBarChannels(settings.status_bar_channels);
         if (settings.last_serial_port) setLastSerialPort(settings.last_serial_port);
+        if (['Serial', 'Tcp', 'KLine', 'KLineKwp'].includes(settings.last_connection_type)) {
+          setConnectionType(settings.last_connection_type);
+        }
         // Restore UI layout state.
         if (settings.sidebar_visible !== undefined) setSidebarVisible(!!settings.sidebar_visible);
         if (settings.show_ecu_menus_in_menubar !== undefined) setShowEcuMenusInMenubar(!!settings.show_ecu_menus_in_menubar);
@@ -1042,18 +1045,27 @@ function AppContent() {
         // Save the successful connection port to project config and app memory
         if (currentProject) {
           try {
+            // the rate this connect USED (the wizard passes its own), not
+            // the state captured before it - the project kept the old one
             await invoke("update_project_connection", {
               port: portToUse,
-              baudRate: baudRate,
+              baudRate: effectiveBaud,
             });
-            setCurrentProject({
-              ...currentProject,
-              connection: {
-                ...currentProject.connection,
-                port: portToUse,
-                baud_rate: baudRate,
-              },
-            });
+            // From the latest state: right after the connect wizard created
+            // a project, `currentProject` here is still the previous one,
+            // and spreading it put the old project's name back on screen.
+            setCurrentProject((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    connection: {
+                      ...prev.connection,
+                      port: portToUse,
+                      baud_rate: effectiveBaud,
+                    },
+                  }
+                : prev
+            );
             console.log("Saved connection settings to project");
           } catch (saveError) {
             console.error("Failed to save connection settings:", saveError);
@@ -1066,6 +1078,10 @@ function AppContent() {
             value: portToUse,
           });
           setLastSerialPort(portToUse);
+          await invoke("update_setting", {
+            key: "last_connection_type",
+            value: effectiveConnectionType,
+          });
         } catch (saveError) {
           console.error("Failed to save last serial port:", saveError);
         }

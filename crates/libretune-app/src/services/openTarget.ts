@@ -1,3 +1,4 @@
+// Modified 2026-11-02 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { invoke } from "@tauri-apps/api/core";
 import type { Tab } from "../components/tuner-ui";
 import type { SimpleGaugeInfo } from "../components/curves/CurveEditor";
@@ -122,7 +123,7 @@ export async function openTargetImpl(
     const data = await invoke<BackendTableData>("get_table_data", { tableName: name });
     const tableData = toTunerTableData(data);
 
-    const displayTitle = title && title !== name ? `${title} (${name})` : data.title || name;
+    const displayTitle = title || data.title || name;
     setTabs([...tabs, { id: name, title: displayTitle, icon: "table" }]);
     setTabContents({ ...tabContents, [name]: { type: "table", data: tableData } });
     setActiveTabId(name);
@@ -146,7 +147,7 @@ export async function openTargetImpl(
       }
     }
 
-    const displayTitle = title && title !== name ? `${title} (${name})` : data.title || name;
+    const displayTitle = title || data.title || name;
     setTabs([...tabs, { id: name, title: displayTitle, icon: "curve" }]);
     setTabContents({ ...tabContents, [name]: { type: "curve", data: curveData, gauge: gaugeInfo } });
     setActiveTabId(name);
@@ -160,7 +161,7 @@ export async function openTargetImpl(
   try {
     const def = await invoke<RendererDialogDef>("get_dialog_definition", { name });
 
-    const displayTitle = title && title !== name ? `${title} (${name})` : def.title || name;
+    const displayTitle = title || def.title || name;
     setTabs([...tabs, { id: name, title: displayTitle, icon: "dialog" }]);
     setTabContents({ ...tabContents, [name]: { type: "dialog", data: def, highlightTerm } });
     setActiveTabId(name);
@@ -184,7 +185,7 @@ export async function openTargetImpl(
       showToast("Failed to load saved port assignments", "warning");
     }
 
-    const displayTitle = title && title !== name ? `${title} (${name})` : portEditor.label || name;
+    const displayTitle = title || portEditor.label || name;
     setTabs([...tabs, { id: name, title: displayTitle, icon: "dialog" }]);
     setTabContents({ ...tabContents, [name]: { type: "portEditor", data: portEditor } });
     setActiveTabId(name);

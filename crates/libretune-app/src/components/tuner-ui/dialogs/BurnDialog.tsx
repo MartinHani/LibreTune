@@ -1,3 +1,4 @@
+// Modified 2026-11-02 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useState, useCallback, useEffect } from 'react';
 import { AlertTriangle, Check, Flame } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -68,12 +69,15 @@ export function BurnDialog({ isOpen, onClose, connected, onBurned }: BurnDialogP
       await invoke('burn_to_ecu', { force: hasConflicts && forceAck ? true : null });
       setSuccess(true);
       onBurned?.();
+      // a finished Burn closes the window (it stayed open with the Burn
+      // button live, inviting a second Burn); the success line shows briefly
+      setTimeout(() => { setSuccess(false); onClose(); }, 900);
     } catch (e) {
       setError(String(e));
     } finally {
       setIsBurning(false);
     }
-  }, [onBurned, hasConflicts, forceAck]);
+  }, [onBurned, onClose, hasConflicts, forceAck]);
 
   return (
     <Dialog

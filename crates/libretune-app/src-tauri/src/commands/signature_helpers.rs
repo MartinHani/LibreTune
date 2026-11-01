@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Signature comparison and INI matching helpers.
 
 use crate::{AppState, ConnectResult, MatchingIniInfo, SignatureMatchType, SignatureMismatchInfo};
@@ -51,6 +52,19 @@ pub(crate) fn compare_signatures_with_prefix(
 
     if ecu_normalized == ini_normalized {
         return SignatureMatchType::Exact;
+    }
+
+    // HaniCore: "HaniCore <board> <layout>". Every board shares the layout
+    // id, so the trailing-hash rule below would pair a Porsche ME711 with the
+    // ME75DC .ini (wrong pins and curves). Only the whole signature counts;
+    // the old "rusEFI " prefix is ignored.
+    if ecu_normalized.contains("hanicore") && ini_normalized.contains("hanicore") {
+        let bare = |s: &str| s.trim_start_matches("rusefi ").to_string();
+        return if bare(&ecu_normalized) == bare(&ini_normalized) {
+            SignatureMatchType::Exact
+        } else {
+            SignatureMatchType::Mismatch
+        };
     }
 
     if let Some(prefix) = ini_prefix {
@@ -305,4 +319,24 @@ pub(crate) async fn find_matching_inis_from_state(
     });
 
     matches
+}
+
+#[cfg(test)]
+mod hanicore_signature_tests {
+    use super::*;
+
+    /// Every HaniCore board shares the layout id: the board name decides.
+    #[test]
+    fn hanicore_board_must_match_not_only_the_layout() {
+        let porsche = "HaniCore ME711 3EF8E9EA";
+        assert_eq!(compare_signatures(porsche, "HaniCore ME711 3EF8E9EA"), SignatureMatchType::Exact);
+        assert_eq!(compare_signatures(porsche, "rusEFI HaniCore ME711 3EF8E9EA"), SignatureMatchType::Exact);
+        assert_eq!(compare_signatures(porsche, "HaniCore ME75DC 3EF8E9EA"), SignatureMatchType::Mismatch);
+        assert_eq!(compare_signatures(porsche, "HaniCore ME711 83D8361E"), SignatureMatchType::Mismatch);
+        // rusEFI keeps its trailing-hash rule
+        assert_eq!(
+            compare_signatures("rusEFI master.2024.02.24.proteus.12345678", "rusEFI master.2024.03.01.proteus.12345678"),
+            SignatureMatchType::Exact
+        );
+    }
 }

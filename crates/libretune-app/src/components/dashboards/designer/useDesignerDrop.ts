@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useCallback } from 'react';
 import { DashFile, TsGaugeConfig } from '../dashTypes';
 
@@ -42,8 +43,9 @@ export function createDefaultGaugeFromChannel(
 ): TsGaugeConfig {
   const units = info?.units || '';
   const label = info?.label || channelLabel;
-  const minVal = info ? Math.min(0, info.translate) : 0;
-  const maxVal = info ? Math.max(100, info.translate + (100 * info.scale)) : 100;
+  // INI rule: value = (raw + translate) * scale
+  const minVal = info ? Math.min(0, info.translate * info.scale) : 0;
+  const maxVal = info ? Math.max(100, (100 + info.translate) * info.scale) : 100;
 
   return {
     id: `gauge_${Date.now()}`,

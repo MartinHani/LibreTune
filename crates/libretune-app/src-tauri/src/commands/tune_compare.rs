@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Cross-file tune comparison and merge Tauri commands.
 
 use libretune_core::tune::{TuneDiff, TuneFile, TuneValue};
@@ -40,10 +41,13 @@ pub async fn merge_from_tune(
                 if let Some(value) = source.constants.get(name) {
                     if let Some(constant) = def.constants.get(name) {
                         if let TuneValue::Scalar(v) = value {
-                            let raw_val = ((*v - constant.translate) / constant.scale) as i64;
-                            let page = constant.page;
-                            let offset = constant.offset;
-                            cache.write_bytes(page, offset, &[(raw_val & 0xFF) as u8]);
+                            // The whole field, in the INI's conversion - this
+                            // wrote only the low byte, raw = (v - translate) / scale.
+                            let raw = constant.display_to_raw(*v);
+                            let endian = constant.endianness_override.unwrap_or(def.endianness);
+                            let mut bytes = vec![0u8; constant.data_type.size_bytes()];
+                            constant.data_type.write_to_bytes(&mut bytes, 0, raw, endian);
+                            cache.write_bytes(constant.page, constant.offset, &bytes);
                         }
                     }
                 }

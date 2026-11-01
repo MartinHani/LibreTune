@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! INI Expression Parser and Evaluator
 //!
 //! This module implements a parser and evaluator for expressions used in ECU INI files
@@ -1303,16 +1304,62 @@ pub fn evaluate_display_string(
             return raw.to_string();
         }
         let mut parser = Parser::new(inner);
-        match parser.parse() {
-            Ok(expr) => match evaluate(&expr, context, string_context) {
-                Ok(value) => value.to_display_string(),
-                Err(_) => raw.to_string(),
-            },
-            Err(_) => raw.to_string(),
+        let whole = parser
+            .parse()
+            .ok()
+            .and_then(|expr| evaluate(&expr, context, string_context).ok());
+        match whole {
+            Some(value) => value.to_display_string(),
+            None => interpolate_calls(inner, context, string_context)
+                .unwrap_or_else(|| raw.to_string()),
         }
     } else {
         raw.to_string()
     }
+}
+
+/// Text with embedded `bitStringValue(...)` calls, as TunerStudio shows it:
+/// `{ FAIL: bitStringValue(whyList, why) }` -> "FAIL: TPS SPAN". Every call
+/// is replaced by its value and the text around it is kept. None when there
+/// is no call or one does not evaluate.
+fn interpolate_calls(
+    inner: &str,
+    context: &HashMap<String, f64>,
+    string_context: Option<&StringContext>,
+) -> Option<String> {
+    const CALL: &str = "bitStringValue(";
+    let mut out = String::new();
+    let mut rest = inner;
+    let mut found = false;
+    while let Some(start) = rest.find(CALL) {
+        out.push_str(&rest[..start]);
+        let open = start + CALL.len() - 1;
+        let mut depth = 0usize;
+        let mut close = None;
+        for (i, c) in rest[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close?;
+        let expr = Parser::new(&rest[start..=close]).parse().ok()?;
+        out.push_str(&evaluate(&expr, context, string_context).ok()?.to_display_string());
+        rest = &rest[close + 1..];
+        found = true;
+    }
+    if !found {
+        return None;
+    }
+    out.push_str(rest);
+    Some(out.trim().to_string())
 }
 
 #[cfg(test)]
@@ -1482,6 +1529,31 @@ mod tests {
             evaluate(&expr, &context, Some(&string_ctx)).unwrap(),
             Value::String("MAP".to_string())
         );
+    }
+
+    /// TunerStudio labels mix text and calls inside one pair of braces
+    /// (`{ FAIL: bitStringValue(list, why) }`); the text is kept.
+    #[test]
+    fn display_string_interpolates_text_and_calls() {
+        let mut context = HashMap::new();
+        context.insert("why".to_string(), 2.0);
+        let string_ctx = StringContext {
+            get_bit_options: Some(Box::new(|name| {
+                (name == "whyList").then(|| vec!["-".into(), "RPM > 0".into(), "TPS SPAN".into()])
+            })),
+            ..StringContext::default()
+        };
+        let show = |raw: &str| evaluate_display_string(raw, &context, Some(&string_ctx));
+        assert_eq!(show("{ FAIL: bitStringValue(whyList, why)}"), "FAIL: TPS SPAN");
+        assert_eq!(
+            show("{ Correction using bitStringValue(whyList, why - 1) region }"),
+            "Correction using RPM > 0 region"
+        );
+        assert_eq!(show("{ bitStringValue(whyList, why) }"), "TPS SPAN");
+        // Nothing to interpolate: shown as written.
+        assert_eq!(show("{ plain words }"), "{ plain words }");
+        // An unknown list reads as the plain call does.
+        assert_eq!(show("{ FAIL: bitStringValue(noList, why) }"), "FAIL: INVALID[2]");
     }
 
     #[test]

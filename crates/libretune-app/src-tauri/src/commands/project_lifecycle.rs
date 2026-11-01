@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! create_project and open_project commands (extracted from lib.rs).
 
 use crate::{with_settings, AppState, ConnectionSettingsResponse, CurrentProjectInfo};
@@ -8,6 +9,7 @@ use tauri::Emitter;
 
 #[tauri::command]
 pub async fn create_project(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     name: String,
     ini_id: String,
@@ -155,6 +157,11 @@ pub async fn create_project(
             auto_connect: project.config.settings.auto_connect,
         },
     };
+
+    // The new project is the one to reopen next time, as open_project
+    // records it; otherwise a restart went back to the previous project.
+    let path = response.path.clone();
+    with_settings(&app, |settings| settings.last_project_path = Some(path));
 
     let mut proj_guard = state.current_project.lock().await;
     *proj_guard = Some(project);

@@ -1,4 +1,4 @@
-// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
+// Modified 2026-10-30/31, 2026-11-02 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { invoke } from "@tauri-apps/api/core";
 import {
   SaveDialog,
@@ -282,7 +282,12 @@ export function DialogOverlays(props: DialogOverlaysProps) {
         isOpen={burnDialogOpen}
         onClose={() => setBurnDialogOpen(false)}
         connected={status.state === "Connected"}
-        onBurned={() => { void refreshTuneModified?.(); }}
+        onBurned={() => {
+          // what is now in the ECU's flash is the project's tune: save it, or
+          // the next connect offers a Difference Report against the old file
+          void invoke('save_tune_to_project').catch(() => {});
+          void refreshTuneModified?.();
+        }}
       />
       <FirmwareUpdateDialog
         isOpen={firmwareUpdateDialogOpen}

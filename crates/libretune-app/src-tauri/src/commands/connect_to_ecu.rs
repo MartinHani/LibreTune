@@ -21,6 +21,10 @@ pub async fn connect_to_ecu(
     connection_type: Option<String>,
     tcp_host: Option<String>,
     tcp_port: Option<u16>,
+    // The connect wizard only reads the ECU's signature, under whatever .ini
+    // the previous project left loaded: a mismatch there is expected and
+    // must not open the app-wide "INI Signature Mismatch" dialog.
+    detect_only: Option<bool>,
 ) -> Result<ConnectResult, String> {
     use libretune_core::protocol::ConnectionType;
 
@@ -234,7 +238,9 @@ pub async fn connect_to_ecu(
                     };
 
                     // Also emit event for backward compatibility
-                    let _ = app.emit("signature:mismatch", &info);
+                    if !detect_only.unwrap_or(false) {
+                        let _ = app.emit("signature:mismatch", &info);
+                    }
 
                     Some(info)
                 } else {

@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 // Added 2026-10-30 in the HaniCore K-line fork of LibreTune (see FORK.md);
 // GPL-2.0, as the rest of LibreTune.
 //! K-line transport for an ordinary KKL (FTDI K-line) cable.
@@ -352,12 +353,23 @@ impl<W: KWire> Inner<W> {
         let r = match self.mode {
             KLineMode::EchoOnly => Ok(()),
             KLineMode::Direct => {
+                let asked = self.rate;
                 if self.find_link(FIND_LINK) {
                     Ok(())
+                } else if asked != 57600 && {
+                    // Every HaniCore board boots its link at 57600; not every
+                    // board can make the other rates (the 24 MHz ones have no
+                    // 115200), so a rate it cannot make is not a dead ECU.
+                    self.rate = 57600;
+                    self.find_link(FIND_LINK)
+                } {
+                    tracing::warn!("K-line: no answer at {} baud, connected at 57600", asked);
+                    Ok(())
                 } else {
+                    self.rate = asked;
                     Err(format!(
                         "no answer at {} baud - ECU powered? cable on the K-line pin?",
-                        self.rate
+                        asked
                     ))
                 }
             }

@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
@@ -43,8 +44,17 @@ export function IndicatorPanelRenderer({
   panel: IndicatorPanel;
   context: Record<string, number>;
 }) {
+  // Variables of the conditions AND of braced labels: "{ FAIL:
+  // bitStringValue(whyList, why) }" needs `why` live too, or it reads 0 and
+  // the tile says "FAIL: -" while the ECU knows the reason.
   const usedVars = useMemo(
-    () => extractExpressionVariables(panel.indicators.map((ind) => ind.expression)),
+    () =>
+      extractExpressionVariables(
+        panel.indicators.flatMap((ind) => [
+          ind.expression,
+          ...[ind.label_on, ind.label_off].filter((l) => l.trim().startsWith('{')),
+        ]),
+      ),
     [panel.indicators],
   );
 

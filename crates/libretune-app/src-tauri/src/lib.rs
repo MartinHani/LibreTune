@@ -1,3 +1,4 @@
+// Modified 2026-11-02 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! LibreTune Tauri application entry point.
 //!
 //! This module wires together the Tauri runtime, application state, and
@@ -156,6 +157,7 @@ use commands::settings::{
 };
 use commands::start_autotune::start_autotune;
 use commands::sync_ecu_data::sync_ecu_data;
+use commands::page_refresh::{get_page_refresh_triggers, refresh_page_from_ecu};
 use commands::system::{get_build_info, get_serial_ports};
 use commands::table_compare::compare_tables;
 use commands::table_file_io::{export_table_to_file, import_table_from_file};
@@ -251,6 +253,8 @@ pub fn run() {
             get_available_inis,
             connect_to_ecu,
             sync_ecu_data,
+            get_page_refresh_triggers,
+            refresh_page_from_ecu,
             get_tune_mismatch_dialog_index,
             get_tune_mismatch_dialog_view,
             disconnect_ecu,

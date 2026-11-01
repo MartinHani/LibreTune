@@ -1,4 +1,4 @@
-// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
+// Modified 2026-10-30/31, 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Connection management
 //!
 //! Handles the connection lifecycle and command execution with the ECU.
@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 
 use super::calibration::{self, CalibrationTable};
 use super::kline::{KLineChannel, KLineMode};
+
+/// Data bytes in one K-line write: 'W' + a 2-byte offset + 64 fits HaniCore's
+/// 72-byte request buffer (RXMAX in its hcts.h) with room to spare.
+const KLINE_WRITE_CHUNK: usize = 64;
 use super::stream::{CommunicationChannel, SerialChannel, TcpChannel};
 use super::{
     commands::{BurnParams, ReadMemoryParams, WriteMemoryParams},
@@ -1878,6 +1882,12 @@ impl Connection {
     /// chunks 8 bytes too large, which then re-split every one of them into a
     /// full frame plus an 8-byte runt — an extra round-trip and an extra pacing
     /// delay per chunk on every bulk page write.
+    ///
+    /// A K-line ECU (HaniCore) takes a request of at most 72 bytes, so a write
+    /// carries at most [`KLINE_WRITE_CHUNK`] data bytes there; its
+    /// `blockingFactor` (256) describes reads. A 256-byte write frame was
+    /// dropped by the ECU without a reply, so every table edit stayed on the
+    /// screen while the engine ran the old values.
     fn effective_write_chunk(&self) -> usize {
         let blocking_factor = self
             .protocol_settings
@@ -1885,7 +1895,23 @@ impl Connection {
             .map(|p| p.blocking_factor)
             .unwrap_or(256)
             .max(1) as usize;
-        blocking_factor.saturating_sub(8).max(1)
+        let chunk = blocking_factor.saturating_sub(8).max(1);
+        if self.is_kline_link() {
+            chunk.min(KLINE_WRITE_CHUNK)
+        } else {
+            chunk
+        }
+    }
+
+    /// The link is a K-line (a KKL cable, or `filterEchoBytes` on a serial port).
+    fn is_kline_link(&self) -> bool {
+        matches!(
+            self.config.connection_type,
+            ConnectionType::KLine | ConnectionType::KLineKwp
+        ) || self
+            .protocol_settings
+            .as_ref()
+            .is_some_and(|p| p.filter_echo_bytes)
     }
 
     /// How long to leave the link idle after handing the ECU a write frame of
@@ -2209,7 +2235,10 @@ impl Connection {
         // (`check_write_response_status`), so the ECU has already confirmed
         // storage; reading back would double the traffic for no added signal.
         // Legacy is answered by silence, which is what the read-back is for.
-        if self.use_modern_protocol || expected.is_empty() {
+        // Except on a K-line: a frame the ECU dropped there (it was bigger
+        // than its request buffer) still came back "OK" and the edit was
+        // lost, so a K-line write is always read back.
+        if (self.use_modern_protocol && !self.is_kline_link()) || expected.is_empty() {
             return Ok(());
         }
 
@@ -3323,6 +3352,22 @@ mod tests {
     /// budget. Speeduino declares `blockingFactor = 251` and pages up to 384
     /// bytes: splitting at the full 251 handed `write_memory` a chunk 8 bytes
     /// over its own limit, which re-split it into 243 + an 8-byte runt frame.
+    /// A K-line ECU takes 72-byte requests whatever its blockingFactor says.
+    #[test]
+    fn kline_writes_fit_the_ecu_request_buffer() {
+        let mut conn = Connection::new(ConnectionConfig::default());
+        let mut proto = ProtocolSettings::default();
+        proto.blocking_factor = 256;
+        conn.set_protocol(proto.clone(), Endianness::Big);
+        assert_eq!(conn.effective_write_chunk(), 248, "serial: blockingFactor less 8");
+        conn.config.connection_type = ConnectionType::KLine;
+        assert_eq!(conn.effective_write_chunk(), KLINE_WRITE_CHUNK);
+        conn.config.connection_type = ConnectionType::Serial;
+        proto.filter_echo_bytes = true;
+        conn.set_protocol(proto, Endianness::Big);
+        assert_eq!(conn.effective_write_chunk(), KLINE_WRITE_CHUNK);
+    }
+
     #[test]
     fn page_and_memory_writes_chunk_to_the_same_size() {
         let core = Arc::new(Mutex::new(MegaCore::new()));

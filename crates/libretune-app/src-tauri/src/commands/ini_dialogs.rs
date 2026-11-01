@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! INI dialog/indicator/port-editor/help/expression query commands.
 
 use crate::commands::string_context::{build_string_context_filtered, referenced_identifiers};
@@ -55,6 +56,19 @@ pub async fn evaluate_string_expression(
 ) -> Result<String, String> {
     let names = referenced_identifiers(&expression);
     let string_ctx = build_string_context_filtered(&state, Some(&names)).await;
+    // Computed channels as evaluate_expression folds them: a label such as
+    // "{ FAIL: bitStringValue(whyList, etbCalWhy) }" read a computed
+    // etbCalWhy as 0 and showed "FAIL: -" next to a lit FAIL condition.
+    // A live value the caller sent wins; only the missing ones are folded.
+    let mut context = context;
+    {
+        let def_guard = state.definition.lock().await;
+        if let Some(def) = def_guard.as_ref() {
+            let given = context.clone();
+            def.fold_computed_output_channels(&mut context);
+            context.extend(given);
+        }
+    }
     Ok(evaluate_display_string(
         &expression,
         &context,

@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Update constant value command.
 
 use crate::AppState;
@@ -70,6 +71,7 @@ pub(crate) async fn update_constant_internal(
         .ok_or_else(|| format!("Constant {} not found", name))?
         .clone();
     let endianness = def.endianness;
+    let aliases = def.overlapping_constant_names(&constant);
     drop(def_guard);
 
     // Block assigning a pin that another output already uses (rusEFI Settings Error).
@@ -192,6 +194,9 @@ pub(crate) async fn update_constant_internal(
             // Update constants HashMap for offline reads
             tune.constants
                 .insert(name.clone(), libretune_core::tune::TuneValue::Scalar(value));
+            for a in &aliases {
+                tune.constants.remove(a);
+            }
         }
 
         // Mark tune as modified
@@ -236,9 +241,13 @@ pub(crate) async fn update_constant_internal(
                 // Get or create page data
                 tune.patch_page_bytes(constant.page, constant.offset, &raw_data);
 
-                // Update constants HashMap for offline reads
+                // Update constants HashMap for offline reads; a name that
+                // shares these bytes (cltSensVal vs cltSensVal1..16) is stale.
                 tune.constants
                     .insert(name.clone(), libretune_core::tune::TuneValue::Scalar(value));
+                for a in &aliases {
+                    tune.constants.remove(a);
+                }
             }
 
             // Mark tune as modified

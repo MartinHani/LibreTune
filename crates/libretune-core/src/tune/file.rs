@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Tune file handling
 //!
 //! Supports .msq (XML) and JSON tune file formats.
@@ -9,6 +10,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
+
+/// Written on `<constantManifest>`: this file's values follow the INI rule
+/// `(raw + translate) * scale`. A LibreTune manifest without it predates the
+/// fix and is converted on load (`TuneFile::legacy_value_rule`).
+const VALUE_RULE_ATTR: &str = "valueRule=\"tunerstudio\"";
 
 /// A tune file containing ECU configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -439,8 +445,15 @@ impl TuneFile {
             tune.ini_metadata = Some(metadata);
         }
 
+        // A manifest without VALUE_RULE_ATTR was written by a LibreTune that
+        // converted with `raw * scale + translate` (see legacy_value_rule).
+        let mut legacy_values = false;
         // Parse constantManifest section (LibreTune 1.1+ format for migration detection)
-        if let Some(manifest_start) = content.find("<constantManifest>") {
+        if let Some(manifest_start) = content.find("<constantManifest") {
+            legacy_values = content[manifest_start..]
+                .split('>')
+                .next()
+                .is_some_and(|tag| !tag.contains(VALUE_RULE_ATTR));
             if let Some(manifest_end) = content[manifest_start..].find("</constantManifest>") {
                 let manifest_content = &content[manifest_start..manifest_start + manifest_end];
                 let mut manifest = Vec::new();
@@ -917,7 +930,42 @@ impl TuneFile {
             ));
         }
 
+        if legacy_values {
+            tune.legacy_value_rule();
+        }
+
         Ok(tune)
+    }
+
+    /// Re-express values saved by a LibreTune that displayed `raw * scale +
+    /// translate` in the INI's rule, `(raw + translate) * scale`. Each saved
+    /// value v stood for raw = (v - translate) / scale. Only fields with both a
+    /// translate and a scale other than 1 differ; pcVariables never went
+    /// through the conversion. Returns how many constants changed.
+    pub fn legacy_value_rule(&mut self) -> usize {
+        let Some(manifest) = self.constant_manifest.as_ref() else {
+            return 0;
+        };
+        let mut changed = 0;
+        for e in manifest {
+            if e.translate == 0.0 || e.scale == 1.0 || e.scale == 0.0 {
+                continue;
+            }
+            // rounded to 1e-6: the saved value was itself a rounded decimal
+            let fix = |v: f64| {
+                (((v - e.translate) / e.scale + e.translate) * e.scale * 1e6).round() / 1e6
+            };
+            match self.constants.get_mut(&e.name) {
+                Some(TuneValue::Scalar(v)) => *v = fix(*v),
+                Some(TuneValue::Array(a)) => a.iter_mut().for_each(|v| *v = fix(*v)),
+                _ => continue,
+            }
+            changed += 1;
+        }
+        if changed > 0 {
+            tracing::info!("msq: {changed} constants re-expressed from the pre-fix value rule");
+        }
+        changed
     }
 
     /// Save the tune file to disk
@@ -1005,7 +1053,7 @@ impl TuneFile {
 
         // Add constant manifest for migration detection (LibreTune 1.1+)
         if let Some(ref manifest) = self.constant_manifest {
-            xml.push_str("  <constantManifest>\n");
+            xml.push_str(&format!("  <constantManifest {VALUE_RULE_ATTR}>\n"));
             for entry in manifest {
                 xml.push_str(&format!(
                     "    <entry name=\"{}\" type=\"{}\" page=\"{}\" offset=\"{}\" scale=\"{}\" translate=\"{}\"/>\n",
@@ -1445,6 +1493,54 @@ impl Default for TuneFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy_msq(manifest_attr: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="ISO-8859-1"?>
+<msq xmlns="http://www.msefi.com/:msq">
+  <versionInfo signature="HaniCore ME75DC 3EF8E9EA" nPages="1"/>
+  <constantManifest{manifest_attr}>
+    <entry name="cltSensVal" type="U16" page="0" offset="1184" scale="0.1" translate="-10000"/>
+    <entry name="cltSensVal1" type="U16" page="0" offset="1184" scale="0.1" translate="-10000"/>
+    <entry name="cltSensAx1" type="U16" page="0" offset="1152" scale="1" translate="0"/>
+  </constantManifest>
+  <page number="0">
+    <constant name="cltSensVal">-8856.8 -9048</constant>
+    <constant name="cltSensVal1">-8856.8</constant>
+    <constant name="cltSensAx1">28</constant>
+  </page>
+</msq>
+"#
+        )
+    }
+
+    /// A tune saved before the scale/translate fix holds 143.2 C as -8856.8
+    /// (raw 11432 through raw * scale + translate). It is re-expressed once on
+    /// load; a file carrying the value-rule marker is taken as written.
+    #[test]
+    fn legacy_value_rule_is_converted_once() {
+        let t = TuneFile::parse_msq(&legacy_msq("")).unwrap();
+        let Some(TuneValue::Array(a)) = t.constants.get("cltSensVal") else { panic!() };
+        assert!((a[0] - 143.2).abs() < 1e-6 && (a[1] - (-48.0)).abs() < 1e-6, "{a:?}");
+        let Some(TuneValue::Scalar(v)) = t.constants.get("cltSensVal1") else { panic!() };
+        assert!((v - 143.2).abs() < 1e-6);
+        let Some(TuneValue::Scalar(ax)) = t.constants.get("cltSensAx1") else { panic!() };
+        assert_eq!(*ax, 28.0);
+
+        let marked = TuneFile::parse_msq(&legacy_msq(&format!(" {VALUE_RULE_ATTR}"))).unwrap();
+        let Some(TuneValue::Scalar(v)) = marked.constants.get("cltSensVal1") else { panic!() };
+        assert!((v - (-8856.8)).abs() < 1e-6, "a marked file must not be converted");
+
+        // save -> load keeps the converted values (the marker is written)
+        let dir = std::env::temp_dir().join(format!("lt_vr_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.msq");
+        t.save(&p).unwrap();
+        let back = TuneFile::load(&p).unwrap();
+        let Some(TuneValue::Scalar(v)) = back.constants.get("cltSensVal1") else { panic!() };
+        assert!((v - 143.2).abs() < 1e-6, "reloaded {v}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Serializing the same tune twice must produce identical bytes.
     ///

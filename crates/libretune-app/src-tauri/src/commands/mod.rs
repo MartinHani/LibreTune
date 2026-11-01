@@ -1,3 +1,4 @@
+// Modified 2026-11-02 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Tauri command handlers, organized by domain.
 //!
 //! Each submodule exports a set of `#[tauri::command]` functions that are
@@ -70,6 +71,7 @@ pub mod signature_helpers;
 pub mod start_autotune;
 pub mod string_context;
 pub mod sync_ecu_data;
+pub mod page_refresh;
 pub mod system;
 pub mod table_compare;
 pub mod table_file_io;

@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! App-level Settings struct, defaults, and load/save helpers.
 
 use crate::paths::get_settings_path;
@@ -117,6 +118,11 @@ pub(crate) struct Settings {
     /// Last serial port that successfully connected (app-wide, survives project switches).
     #[serde(default)]
     pub(crate) last_serial_port: Option<String>,
+
+    /// Connection mode of the last successful connection (Serial, Tcp, KLine,
+    /// KLineKwp), so Connect on a K-line ECU does not reopen as Serial/USB.
+    #[serde(default)]
+    pub(crate) last_connection_type: Option<String>,
 
     /// Auto-sync and reconnect after controller commands that reboot the ECU.
     #[serde(default = "default_true")]
@@ -394,6 +400,7 @@ fn default_settings() -> Settings {
         commit_message_format: default_commit_message_format(),
         runtime_packet_mode: default_runtime_packet_mode(),
         last_serial_port: None,
+        last_connection_type: None,
         auto_reconnect_after_controller_command: default_true(),
         auto_reconnect_after_firmware: default_true(),
         fome_fast_comms_enabled: default_true(),

@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! INI Definition File Parser
 //!
 //! Parses standard ECU INI definition files that define ECU configurations.
@@ -184,6 +185,12 @@ pub struct EcuDefinition {
 
     /// Live numeric readout panels (TunerStudio readoutPanel)
     pub readout_panels: HashMap<String, ReadoutPanel>,
+
+    /// [EventTriggers] `triggeredPageRefresh = <page>, { expression }`: when
+    /// the expression becomes true the ECU has changed that page itself
+    /// (preset, Grab, calibration) and the app must read it again. Pages
+    /// here are 0-based, like `Constant::page`.
+    pub page_refresh_triggers: Vec<(u8, String)>,
 
     /// Controller commands
     pub controller_commands: HashMap<String, ControllerCommand>,
@@ -519,6 +526,36 @@ impl EcuDefinition {
         format!("{:016x}", hasher.finish())
     }
 
+    /// The other ECU constants that share bytes with `c` - an INI may name the
+    /// same storage twice, e.g. an array `cltSensVal` and the scalars
+    /// `cltSensVal1..16` a `settingOption` assigns. After a write through one
+    /// name, the others' entries in `tune.constants` are stale: drop them so
+    /// reads fall back to the page bytes.
+    pub fn overlapping_constant_names(&self, c: &Constant) -> Vec<String> {
+        fn span(c: &Constant) -> Option<(u32, u32)> {
+            if c.is_pc_variable {
+                return None;
+            }
+            let (start, len) = if c.data_type == DataType::Bits {
+                let bp = c.bit_position.unwrap_or(0) as u32;
+                let bits = bp % 8 + c.bit_size.unwrap_or(1) as u32;
+                (c.offset as u32 + bp / 8, bits.div_ceil(8))
+            } else {
+                (c.offset as u32, c.size_bytes() as u32)
+            };
+            (len > 0).then_some((start, start + len))
+        }
+        let Some((a0, a1)) = span(c) else {
+            return Vec::new();
+        };
+        self.constants
+            .values()
+            .filter(|o| o.page == c.page && o.name != c.name)
+            .filter(|o| span(o).is_some_and(|(b0, b1)| b0 < a1 && a0 < b1))
+            .map(|o| o.name.clone())
+            .collect()
+    }
+
     /// Whether the constant `name` feeds any `{expression}`-valued scale or
     /// translate field, either directly or through an output-channel helper.
     ///
@@ -800,6 +837,7 @@ impl Default for EcuDefinition {
             frontpage: None,
             indicator_panels: HashMap::new(),
             readout_panels: HashMap::new(),
+            page_refresh_triggers: Vec::new(),
             controller_commands: HashMap::new(),
             logger_definitions: HashMap::new(),
             diagnostic_loggers: Vec::new(),
@@ -855,6 +893,30 @@ fn is_digit_sibling(labeled: &str, candidate: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HaniCore names the coolant curve twice: the array the curve editor
+    /// uses and the per-element scalars its sensor picker assigns.
+    #[test]
+    fn aliases_of_shared_storage_are_found() {
+        let mut def = EcuDefinition::default();
+        let mut arr = Constant::new("cltSensVal", 0, 1184, DataType::U16);
+        arr.shape = Shape::Array1D(16);
+        def.constants.insert(arr.name.clone(), arr.clone());
+        for i in 0..16u16 {
+            let s = Constant::new(format!("cltSensVal{}", i + 1), 0, 1184 + 2 * i, DataType::U16);
+            def.constants.insert(s.name.clone(), s);
+        }
+        let mut axis = Constant::new("cltSensAx", 0, 1152, DataType::U16);
+        axis.shape = Shape::Array1D(16);
+        def.constants.insert(axis.name.clone(), axis);
+
+        let mut of_arr = def.overlapping_constant_names(&arr);
+        of_arr.sort();
+        assert_eq!(of_arr.len(), 16);
+        assert!(!of_arr.contains(&"cltSensAx".to_string()));
+        let one = def.constants["cltSensVal3"].clone();
+        assert_eq!(def.overlapping_constant_names(&one), vec!["cltSensVal".to_string()]);
+    }
 
     /// The real Speeduino case: a load axis whose scale is `{fuelLoadRes}`,
     /// itself `((algorithm == 0) || (algorithm == 2)) ? 2.000 : 0.500`. Before

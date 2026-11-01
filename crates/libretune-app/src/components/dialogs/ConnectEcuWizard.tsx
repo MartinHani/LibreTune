@@ -1,4 +1,4 @@
-// Modified 2026-10-30/31 in the HaniCore K-line fork of LibreTune (see FORK.md).
+// Modified 2026-10-30/31, 2026-11-01, 2026-11-02 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -100,7 +100,14 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
     try {
       const found = await invoke<string[]>("get_serial_ports");
       setPorts(found);
-      if (found.length > 0 && !found.includes(port)) setPort(found[0]);
+      if (found.length > 0 && !found.includes(port)) {
+        // the port that worked last time, when it is still there (the
+        // wizard offered the first port, COM1, over a KKL cable on COM3)
+        const last = await invoke<{ last_serial_port?: string | null }>("get_settings")
+          .then((s) => s?.last_serial_port ?? null)
+          .catch(() => null);
+        setPort(last && found.includes(last) ? last : found[0]);
+      }
     } catch {
       setPorts([]);
     } finally {
@@ -152,6 +159,7 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
         baudRate: baud,
         tcpHost: transport === "wifi" ? host : null,
         tcpPort: transport === "wifi" ? tcpPort : null,
+        detectOnly: true,
       });
       setSignature(sanitizeSignature(result.signature));
     } catch (e) {
@@ -408,8 +416,8 @@ export default function ConnectEcuWizard({ isOpen, onClose, inis, onIniImported,
                   checked={transport === t}
                   onChange={() => {
                     setTransport(t);
-                    // a K-line ECU boots at 57600; keep the rate one it supports
-                    if (t === "kline" && !WIZARD_KLINE_BAUD_RATES.includes(baud)) setBaud(57600);
+                    // a K-line ECU boots at 57600, the one rate every board makes
+                    if (t === "kline") setBaud(57600);
                   }}
                 />
                 <span>{transportLabel(t)}</span>

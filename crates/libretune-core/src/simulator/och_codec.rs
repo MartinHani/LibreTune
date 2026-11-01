@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Definition-driven encoding of the simulator's realtime frame.
 //!
 //! The physics produce a [`ChannelValues`] snapshot; this module writes it
@@ -119,9 +120,9 @@ pub(crate) fn encode_channels(
         }
         if let Some(physical) = values.scalar(&channel.name) {
             // Exact inverse of OutputChannel::raw_to_display
-            // (`physical = raw * scale + translate`).
+            // (`physical = (raw + translate) * scale`).
             let raw = if channel.scale != 0.0 {
-                (physical - channel.translate) / channel.scale
+                physical / channel.scale - channel.translate
             } else {
                 0.0
             };

@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! The simulator's hidden "true VE" surface, and the decode of the *table*
 //! VE the tune currently holds in page memory.
 //!
@@ -213,7 +214,7 @@ fn encode_constant(
     let mut bytes = vec![0u8; values.len() * width];
     for (i, physical) in values.iter().enumerate() {
         let raw = if constant.scale != 0.0 {
-            (physical - constant.translate) / constant.scale
+            physical / constant.scale - constant.translate
         } else {
             0.0
         };
@@ -233,7 +234,7 @@ fn encode_constant(
 ///
 /// Uses `DataType::read_from_bytes` — the same decode the realtime path
 /// runs — so endianness handling cannot drift between the two. Applies the
-/// INI's `physical = raw * scale + translate` per element.
+/// INI's `physical = (raw + translate) * scale` per element.
 fn decode_constant(def: &EcuDefinition, memory: &EcuMemory, name: &str) -> Option<Vec<f64>> {
     let constant = def.constants.get(name)?;
     let count = element_count(&constant.shape);
@@ -259,7 +260,7 @@ fn decode_element(
     endian: Endianness,
 ) -> Option<f64> {
     let raw = constant.data_type.read_from_bytes(bytes, offset, endian)?;
-    Some(raw * constant.scale + constant.translate)
+    Some(constant.raw_to_display(raw))
 }
 
 fn element_count(shape: &Shape) -> usize {

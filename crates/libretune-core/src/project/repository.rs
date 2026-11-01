@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! INI Repository Management
 //!
 //! Manages a local repository of ECU definition (INI) files,
@@ -112,15 +113,22 @@ impl IniRepository {
         // Generate unique ID from signature
         let id = Self::generate_id(&signature);
 
-        // Check if already exists
-        if self.entries.iter().any(|e| e.id == id) {
-            return Ok(id); // Already imported
-        }
-
         // Copy file to repository
         let dest_filename = format!("{}.ini", id);
         let dest_path = self.path.join(&dest_filename);
         fs::write(&dest_path, &content)?;
+
+        // Already known: the new file replaces it. A fixed .ini can keep its
+        // signature (HaniCore's carries only the page layout id), and keeping
+        // the old copy silently ignored the fix.
+        if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
+            e.name = name;
+            e.path = dest_filename;
+            e.imported = Utc::now().to_rfc3339();
+            e.source = Some(source_path.to_string_lossy().to_string());
+            self.save_index()?;
+            return Ok(id);
+        }
 
         // Add entry
         let entry = IniEntry {
@@ -331,6 +339,16 @@ nEmu = "Test Engine Control Unit"
         let entry = repo.get(&id).unwrap();
         assert_eq!(entry.name, "Test Engine Control Unit");
         assert_eq!(entry.signature, "TestECU 1.0");
+
+        // A fixed .ini under the same signature replaces the stored one.
+        fs::write(&ini_path, "[MegaTune]
+signature = \"TestECU 1.0\"
+nEmu = \"Fixed\"
+").unwrap();
+        assert_eq!(repo.import(&ini_path).unwrap(), id);
+        assert_eq!(repo.get(&id).unwrap().name, "Fixed");
+        let stored = fs::read_to_string(repo_path.join(&repo.get(&id).unwrap().path)).unwrap();
+        assert!(stored.contains("Fixed"));
 
         // Cleanup
         let _ = fs::remove_dir_all(&temp);

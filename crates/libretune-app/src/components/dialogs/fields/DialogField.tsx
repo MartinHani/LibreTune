@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { HelpCircle } from 'lucide-react';
@@ -5,6 +6,11 @@ import type { Constant, FieldInfo } from '../types';
 import { isIncompleteNumericInput } from '../types';
 import { useDialogValueSource } from '../DialogValueSource';
 import { PowerCycleBadge } from './PowerCycleBadge';
+
+/// A value as the field shows it: scale arithmetic leaves binary noise
+/// (17600 x 5e-6 = 0.08800000000000001), so keep 12 significant digits,
+/// which loses nothing an ECU field can hold.
+const numText = (v: number) => String(Number(v.toPrecision(12)));
 
 export default function DialogField({ 
   label, 
@@ -71,12 +77,12 @@ export default function DialogField({
       } else if (valueSource) {
         const v = valueSource.numbers[name] ?? 0;
         setNumValue(v);
-        setNumInputStr(v.toString());
+        setNumInputStr(numText(v));
       } else {
         invoke<number>('get_constant_value', { name })
           .then((v) => {
             setNumValue(v);
-            setNumInputStr(v.toString());
+            setNumInputStr(numText(v));
           })
           .catch(() => {
             setNumValue(0);
@@ -408,8 +414,10 @@ export default function DialogField({
             if (!isNaN(parsed)) {
               // Clamp to min/max
               const clamped = Math.max(constant.min, Math.min(constant.max, parsed));
+              setNumInputStr(numText(clamped));
+              // Leaving a field untouched is not an edit: nothing to send.
+              if (numValue !== null && numText(numValue) === numText(clamped)) return;
               setNumValue(clamped);
-              setNumInputStr(clamped.toString());
               invoke('update_constant', { name, value: clamped })
                 .then(() => {
                   onOptimisticUpdate?.(name, clamped);
@@ -428,7 +436,7 @@ export default function DialogField({
                 .catch((e) => alert('Update failed: ' + e));
             } else {
               // Invalid input - restore previous valid value
-              setNumInputStr(numValue?.toString() ?? '0');
+              setNumInputStr(numValue !== null ? numText(numValue) : '0');
             }
           }}
           onKeyDown={(e) => {

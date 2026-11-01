@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Tests for INI parsing, especially edge cases with commas in expressions
 //! and space-separated subMenu formats.
 
@@ -893,6 +894,42 @@ readoutPanel = wmiReadoutPanel, 1
     let _ = std::fs::remove_file(&temp_path);
 }
 
+/// TunerStudio's own form, `readout = someGauge` (rusEFI and HaniCore INIs):
+/// the readout takes the gauge's channel, title and units.
+#[test]
+fn test_parse_readout_panel_by_gauge_name() {
+    let ini_content = r#"
+[MegaTune]
+signature = "Test ECU"
+queryCommand = "Q"
+
+[Constants]
+page = 1
+
+[GaugeConfigurations]
+   tpsGauge = tpsX10, "Throttle", "%", 0, 100, -1, -1, 101, 101, 1, 1
+
+[UiDialogs]
+readoutPanel = liveRead, 2
+    readout = tpsGauge
+    readout = noSuchGauge
+"#;
+
+    let temp_path = std::env::temp_dir().join("test_readout_by_gauge.ini");
+    std::fs::write(&temp_path, ini_content).expect("Failed to write temp file");
+    let def = EcuDefinition::from_file(&temp_path).expect("Failed to parse INI");
+    let _ = std::fs::remove_file(&temp_path);
+
+    let panel = def.readout_panels.get("liveRead").expect("panel missing");
+    assert_eq!(panel.readouts.len(), 2);
+    assert_eq!(panel.readouts[0].channel, "tpsX10");
+    assert_eq!(panel.readouts[0].title, "Throttle");
+    assert_eq!(panel.readouts[0].units, "%");
+    assert_eq!(panel.readouts[0].precision, 1);
+    // an unknown gauge still shows, under its own name
+    assert_eq!(panel.readouts[1].title, "noSuchGauge");
+}
+
 #[test]
 fn test_parse_dialog_gauge_components() {
     use libretune_core::ini::{DialogComponent, EcuDefinition};
@@ -1028,4 +1065,25 @@ curve = cltIdleRPMCurve, "Idle Target RPM"
     assert_eq!(curve.x_bins, "cltIdleRpmBins");
     assert_eq!(curve.x_output_channel.as_deref(), Some("coolant"));
     assert_eq!(curve.y_bins, "cltIdleRpm");
+}
+
+/// [EventTriggers]: the page to re-read (0-based) and its expression.
+#[test]
+fn test_parse_event_triggers() {
+    let ini_content = r#"
+[MegaTune]
+signature = "Test ECU"
+queryCommand = "Q"
+
+[Constants]
+page = 1
+
+[EventTriggers]
+   triggeredPageRefresh = 1, { presetPageRefresh }
+"#;
+    let temp_path = std::env::temp_dir().join("test_event_triggers.ini");
+    std::fs::write(&temp_path, ini_content).expect("Failed to write temp file");
+    let def = EcuDefinition::from_file(&temp_path).expect("Failed to parse INI");
+    let _ = std::fs::remove_file(&temp_path);
+    assert_eq!(def.page_refresh_triggers, vec![(0u8, "presetPageRefresh".to_string())]);
 }

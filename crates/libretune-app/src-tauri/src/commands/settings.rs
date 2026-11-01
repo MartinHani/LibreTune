@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Application settings commands.
 
 use crate::{load_settings, with_settings, Settings};
@@ -72,6 +73,13 @@ fn apply_setting(settings: &mut Settings, key: &str, value: &str) -> Result<(), 
         }
         "runtime_packet_mode" => {
             settings.runtime_packet_mode = value.to_string();
+        }
+        "last_connection_type" => {
+            settings.last_connection_type = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
         }
         "last_serial_port" => {
             settings.last_serial_port = if value.is_empty() {

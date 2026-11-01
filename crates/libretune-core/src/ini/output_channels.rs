@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Output channels section parser
 //!
 //! Parses the [OutputChannels] section which defines real-time data from the ECU.
@@ -90,9 +91,10 @@ impl OutputChannel {
         }
     }
 
-    /// Convert a raw value to display value
+    /// Convert a raw value to display value: `(raw + translate) * scale`, the
+    /// INI format's rule (see `Constant::raw_to_display`).
     pub fn raw_to_display(&self, raw: f64) -> f64 {
-        raw * self.scale + self.translate
+        (raw + self.translate) * self.scale
     }
 
     /// Check if this is a computed channel (has expression)

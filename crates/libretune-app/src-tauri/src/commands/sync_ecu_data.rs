@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! sync_ecu_data command (extracted from lib.rs).
 
 use crate::commands::tune_apply::materialize_project_pages;
@@ -237,6 +238,13 @@ pub async fn sync_ecu_data(
         let def_guard = state.definition.lock().await;
         if let (Some(def), Some(msq)) = (def_guard.as_ref(), project_msq.as_ref()) {
             materialize_project_pages(def, msq, &ecu_tune.pages)
+        } else if !was_modified {
+            // A project with no saved tune and no edits (one the connect
+            // wizard just created) has nothing of its own to keep: it takes
+            // the ECU's settings. Comparing the empty cache instead offered
+            // "Use LibreTune Settings" (an all-zero page) as the default, and
+            // "Ignore" left a tune without pages, so no table or curve opened.
+            ecu_tune.pages.clone()
         } else {
             baseline_pages.clone()
         }
@@ -271,6 +279,13 @@ pub async fn sync_ecu_data(
             }
             for (page_num, page_data) in &project_pages {
                 tune.pages.insert(*page_num, page_data.clone());
+            }
+            // A page the project has no data for shows the ECU's, so
+            // "Ignore" never leaves a table without a page to read.
+            for (page_num, page_data) in &ecu_tune.pages {
+                tune.pages
+                    .entry(*page_num)
+                    .or_insert_with(|| page_data.clone());
             }
             *state.current_tune.lock().await = Some(tune);
         }

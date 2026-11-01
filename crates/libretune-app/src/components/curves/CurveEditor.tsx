@@ -1,3 +1,4 @@
+// Modified 2026-11-02 in the HaniCore K-line fork of LibreTune (see FORK.md).
 /**
  * CurveEditor - Unified curve editing component
  * 
@@ -746,9 +747,8 @@ Suggestion: {errorInfo.suggestion}
   }
 
   // Display title
-  const displayTitle = menuLabel 
-    ? `${menuLabel} (${data.name})` 
-    : data.title || data.name;
+  // the menu label a tuner clicked, never the internal curve id
+  const displayTitle = menuLabel || data.title || data.name;
 
   // Gauge value from store
   const gaugeValue = xOutputChannelValue ?? 0;

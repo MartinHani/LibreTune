@@ -1,3 +1,4 @@
+// Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Curve get/update commands.
 
 use crate::AppState;
@@ -275,6 +276,8 @@ pub async fn get_curve_data(
 /// `update_curve_data`).
 struct WriteContext {
     endianness: libretune_core::ini::Endianness,
+    /// Other names for the same bytes (`overlapping_constant_names`).
+    aliases: Vec<String>,
 }
 
 fn write_constant_array_values(
@@ -312,6 +315,9 @@ fn write_constant_array_values(
                 constant.name.clone(),
                 libretune_core::tune::TuneValue::Array(values.to_vec()),
             );
+            for a in &ctx.aliases {
+                tune.constants.remove(a);
+            }
 
             tune.patch_page_bytes(constant.page, constant.offset, &raw_data);
         }
@@ -327,12 +333,10 @@ fn write_constant_array_values(
             data: raw_data,
         };
 
-        if let Err(e) = conn.write_memory(params) {
-            eprintln!(
-                "[WARN] Failed to write constant '{}' to ECU: {}",
-                constant.name, e
-            );
-        }
+        // As update_constant: once connected, a write the ECU did not take is
+        // a failure - the curve on screen would show a value the ECU lacks.
+        conn.write_memory(params)
+            .map_err(|e| format!("Failed to write constant '{}' to ECU: {e}", constant.name))?;
     }
 
     Ok(())
@@ -388,9 +392,11 @@ pub async fn update_curve_data(
 
         let x_ctx = WriteContext {
             endianness: def.endianness,
+            aliases: def.overlapping_constant_names(&x_const),
         };
         let y_ctx = WriteContext {
             endianness: def.endianness,
+            aliases: def.overlapping_constant_names(&y_const),
         };
 
         (x_ctx, x_const, y_ctx, y_const)
