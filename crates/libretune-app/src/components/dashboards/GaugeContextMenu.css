@@ -1,3 +1,4 @@
+/* Modified 2026-11-04 in the HaniCore K-line fork of LibreTune (see FORK.md). */
 /**
  * Gauge Context Menu Styles
  */
@@ -72,6 +73,17 @@
 .submenu .submenu {
   left: 100%;
   top: 0;
+}
+
+/* A gauge category's list opens at the top of the category list and
+   scrolls: an INI category can hold 100+ gauges. */
+.menu-item.gauge-category {
+  position: static;
+}
+
+.submenu.gauge-list {
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
 /* Color picker in menu */

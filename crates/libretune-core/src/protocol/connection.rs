@@ -1,4 +1,4 @@
-// Modified 2026-10-30/31, 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
+// Modified 2026-10-30/31, 2026-11-01, 2026-11-03 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Connection management
 //!
 //! Handles the connection lifecycle and command execution with the ECU.
@@ -455,6 +455,10 @@ pub struct Connection {
     /// fifteen `burnCommand` entries, one per page, each taking the page number),
     /// so burning "the tune" means burning each page that has changed.
     dirty_pages: std::collections::BTreeSet<u8>,
+    /// Pages whose last bulk write failed or did not CRC-verify. Their RAM
+    /// image is unknown, so every burn is refused until they are written
+    /// cleanly again (or the connection is rebuilt).
+    failed_pages: std::collections::BTreeSet<u8>,
     /// ECU type detected from the INI signature (Issue #71).
     /// Drives conservative runtime-command selection for Speeduino/MS2/MS3.
     ecu_type: EcuType,
@@ -462,7 +466,20 @@ pub struct Connection {
     /// blocking I/O polling loops abort early so `disconnect()` can complete even
     /// while another thread is mid-read (Issue #71: "disconnect does nothing").
     cancel: Arc<AtomicBool>,
+    /// HaniCore fork: runtime byte ranges (offset, count) the screen shows,
+    /// read on every poll together with one slice of the whole block (round
+    /// robin, `och_cache` holds the merged block). On a K-line ECU the whole
+    /// block is ~0.3 s; read at once it stalled every live value.
+    /// `och_focus_paused` (a data log is recording: it wants every channel
+    /// fresh) falls back to whole reads.
+    och_focus: Vec<(u16, u16)>,
+    och_cache: Vec<u8>,
+    och_focus_tick: u32,
+    och_focus_paused: bool,
 }
+
+/// HaniCore fork: with a focus set, the block is read in this many slices, one per poll.
+const OCH_FULL_EVERY: u32 = 8;
 
 impl Connection {
     /// Create a new connection (not yet connected)
@@ -486,8 +503,13 @@ impl Connection {
             rx_packets: 0,
             last_written_page: None,
             dirty_pages: std::collections::BTreeSet::new(),
+            failed_pages: std::collections::BTreeSet::new(),
             ecu_type: EcuType::Unknown,
             cancel: Arc::new(AtomicBool::new(false)),
+            och_focus: Vec::new(),
+            och_cache: Vec::new(),
+            och_focus_tick: 0,
+            och_focus_paused: false,
         }
     }
 
@@ -524,8 +546,13 @@ impl Connection {
             rx_packets: 0,
             last_written_page: None,
             dirty_pages: std::collections::BTreeSet::new(),
+            failed_pages: std::collections::BTreeSet::new(),
             ecu_type: EcuType::Unknown,
             cancel: Arc::new(AtomicBool::new(false)),
+            och_focus: Vec::new(),
+            och_cache: Vec::new(),
+            och_focus_tick: 0,
+            och_focus_paused: false,
         }
     }
 
@@ -1572,8 +1599,69 @@ impl Connection {
         false
     }
 
-    /// Get real-time data from ECU
+    /// HaniCore fork: the runtime ranges the screen shows (empty = none).
+    pub fn set_och_focus(&mut self, ranges: Vec<(u16, u16)>) {
+        if self.och_focus != ranges {
+            self.och_focus = ranges;
+        }
+    }
+
+    /// HaniCore fork: whole-block reads while true (a data log records).
+    pub fn pause_och_focus(&mut self, paused: bool) {
+        self.och_focus_paused = paused;
+    }
+
+    /// Get real-time data from ECU. HaniCore fork: with a focus set (values on
+    /// screen) and an OCH command that takes an offset, every poll reads the
+    /// focused ranges plus ONE slice of the block (round robin), merged into
+    /// the last whole block - the block is refreshed every `OCH_FULL_EVERY`
+    /// polls without one long read stalling the screen (~0.3 s on K-line).
     pub fn get_realtime_data(&mut self) -> Result<Vec<u8>, ProtocolError> {
+        let block = self
+            .protocol_settings
+            .as_ref()
+            .map(|p| p.och_block_size as usize)
+            .unwrap_or(0);
+        if !self.och_focus.is_empty()
+            && !self.och_focus_paused
+            && self.use_modern_protocol
+            && block > 0
+            && self.och_cache.len() == block
+        {
+            if let (RuntimeFetch::OCH(fmt), _) = self.choose_runtime_command() {
+                if fmt.contains("%2o") {
+                    let tick = self.och_focus_tick;
+                    self.och_focus_tick = self.och_focus_tick.wrapping_add(1);
+                    let slice = block.div_ceil(OCH_FULL_EVERY as usize);
+                    let s_off = (tick % OCH_FULL_EVERY) as usize * slice;
+                    let mut ranges = self.och_focus.clone();
+                    if s_off < block {
+                        ranges.push((s_off as u16, slice.min(block - s_off) as u16));
+                    }
+                    for (off, cnt) in ranges {
+                        let off_u = off as usize;
+                        if off_u >= block || cnt == 0 {
+                            continue;
+                        }
+                        let cnt = cnt.min((block - off_u) as u16);
+                        let cmd = self.command_builder.build_och_range(&fmt, off, cnt)?;
+                        let response = self.send_packet(Packet::new(cmd))?;
+                        let part = strip_status_byte(&response.payload, cnt as usize, "OCH")?;
+                        self.och_cache[off_u..off_u + part.len()].copy_from_slice(&part);
+                    }
+                    return Ok(self.och_cache.clone());
+                }
+            }
+        }
+        let whole = self.get_realtime_data_whole()?;
+        if block > 0 && whole.len() == block {
+            self.och_cache = whole.clone();
+        }
+        Ok(whole)
+    }
+
+    /// Read the whole runtime block (upstream's get_realtime_data).
+    fn get_realtime_data_whole(&mut self) -> Result<Vec<u8>, ProtocolError> {
         let (choice, _reason) = self.choose_runtime_command();
 
         // Safety net (Issue #71): if Auto/forced OCH was selected but the INI
@@ -1801,10 +1889,11 @@ impl Connection {
         // cached as if it were whole. The legacy read returns whatever arrived
         // before the line fell quiet, and the modern read trusts the frame's
         // own length field, so neither can spot this on its own. This is the
-        // same guard the write-side read-back already applies.
-        if data.len() < params.length as usize {
+        // same guard the write-side read-back already applies. A long reply
+        // is just as wrong: appended whole, it shifts the rest of the page.
+        if data.len() != params.length as usize {
             return Err(ProtocolError::ProtocolError(format!(
-                "short read on page {} offset {}: got {} of {} bytes",
+                "wrong-length read on page {} offset {}: got {} of {} bytes",
                 params.page,
                 params.offset,
                 data.len(),
@@ -1965,7 +2054,21 @@ impl Connection {
     }
 
     /// Write a full page to ECU, respecting blocking factor (same chunking as `read_page`).
+    ///
+    /// A page that fails to write or verify blocks every burn until it is
+    /// written cleanly: burning it would commit a RAM image known to be wrong,
+    /// and burning the pages written before it would commit half a tune.
     pub fn write_page(&mut self, page: u8, data: &[u8]) -> Result<(), ProtocolError> {
+        let result = self.write_and_verify_page(page, data);
+        if result.is_ok() {
+            self.failed_pages.remove(&page);
+        } else {
+            self.failed_pages.insert(page);
+        }
+        result
+    }
+
+    fn write_and_verify_page(&mut self, page: u8, data: &[u8]) -> Result<(), ProtocolError> {
         let chunk_size = self.effective_write_chunk();
 
         let mut offset = 0usize;
@@ -2141,7 +2244,14 @@ impl Connection {
         // corruption on power loss.
         if self.config.auto_burn_on_page_change {
             if let Some(prev_page) = self.last_written_page {
-                if prev_page != params.page {
+                if prev_page != params.page && !self.failed_pages.is_empty() {
+                    // The burn would be refused; failing this write over it
+                    // would drop the edit. It still reaches RAM.
+                    tracing::warn!(
+                        "auto-burn skipped: page(s) {:?} failed to write or verify",
+                        self.failed_pages
+                    );
+                } else if prev_page != params.page {
                     tracing::info!(
                         "auto-burn: page change {} -> {}, burning previous page first",
                         prev_page,
@@ -2290,6 +2400,12 @@ impl Connection {
 
     /// Burn current page to flash using INI-defined command format
     pub fn burn(&mut self, params: BurnParams) -> Result<(), ProtocolError> {
+        if !self.failed_pages.is_empty() {
+            return Err(ProtocolError::ProtocolError(format!(
+                "refusing to burn: page(s) {:?} failed to write or verify; write the tune again or reconnect first",
+                self.failed_pages
+            )));
+        }
         let page = params.page as usize;
 
         // Get page identifier (may differ from page index)
@@ -4337,6 +4453,44 @@ mod burn_page_tests {
             dirty.iter().copied().collect::<Vec<_>>(),
             vec![0, 2, 3, 7, 15]
         );
+    }
+
+    /// A page whose write failed must never reach flash - not through the
+    /// Burn button, not through the empty-set page-0 fallback, and not through
+    /// an explicit single-page burn.
+    #[test]
+    fn a_failed_page_write_blocks_every_burn() {
+        use super::{BurnParams, Connection, ConnectionConfig};
+        let mut conn = Connection::new(ConnectionConfig::default());
+        // No port: the write fails, just as a dropped link or CRC mismatch would.
+        assert!(conn.write_page(0, &[1, 2, 3]).is_err());
+
+        let err = conn.send_burn_command().expect_err("burn must be refused");
+        assert!(err.to_string().contains("refusing to burn"), "{err}");
+        let err = conn
+            .burn(BurnParams { can_id: 0, page: 2 })
+            .expect_err("burn must be refused");
+        assert!(err.to_string().contains("refusing to burn"), "{err}");
+    }
+
+    /// An edit on another page after a failed write must not fail on the
+    /// refused auto-burn; that would drop the edit.
+    #[test]
+    fn a_failed_page_write_skips_auto_burn_instead_of_failing_the_edit() {
+        use super::{Connection, ConnectionConfig, WriteMemoryParams};
+        let mut conn = Connection::new(ConnectionConfig::default());
+        assert!(conn.write_page(0, &[1, 2, 3]).is_err());
+        conn.last_written_page = Some(1);
+
+        let result = conn.write_memory(WriteMemoryParams {
+            can_id: 0,
+            page: 2,
+            offset: 0,
+            data: vec![7],
+        });
+        if let Err(err) = result {
+            assert!(!err.to_string().contains("refusing to burn"), "{err}");
+        }
     }
 }
 

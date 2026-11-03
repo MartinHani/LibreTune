@@ -1,3 +1,4 @@
+// Modified 2026-11-03 in the HaniCore K-line fork of LibreTune (see FORK.md).
 /**
  * Internal panel/field/component renderers used by DialogRenderer.
  * These are mutually recursive (RecursivePanel -> DialogComponentRenderer ->
@@ -33,6 +34,7 @@ import CheckboxField from './fields/CheckboxField';
 import SliderField from './fields/SliderField';
 import DisplayOnlyField from './fields/DisplayOnlyField';
 import { RuntimeValueReadout } from './fields/RuntimeValueReadout';
+import { LiveGraph } from './fields/LiveGraph';
 import { SettingSelectorField } from './fields/SettingSelectorField';
 import { isUserTableLiveChannel, isGppwmLiveChannel, isCommandButtonPanel, inferLiveStateGateExpression } from './dialogLayout';
 import { useDialogValueSource } from './DialogValueSource';
@@ -747,6 +749,10 @@ export function DialogComponentRenderer({
     return <RecursivePanel name={comp.name} openTable={openTable} context={context} onUpdate={onUpdate} />;
   }
   if (comp.type === 'LiveGraph') {
+    // HaniCore fork: a real scrolling trace (was a placeholder).
+    if (comp.channels && comp.channels.length > 0) {
+      return <LiveGraph title={comp.title || comp.name} channels={comp.channels} />;
+    }
     return (
       <div className="embedded-graph-placeholder">
         <Activity size={20} />

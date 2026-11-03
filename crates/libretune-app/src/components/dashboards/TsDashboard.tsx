@@ -1,3 +1,4 @@
+// Modified 2026-11-04 in the HaniCore K-line fork of LibreTune (see FORK.md).
 import {
   DashFile,
   DashFileInfo,
@@ -598,6 +599,12 @@ export default function TsDashboard({ initialDashPath, isConnected = false }: Ts
             gauge_cluster: { ...dashFile.gauge_cluster, components: updatedComponents },
           };
           setDashFile(newFile);
+          // Outside the designer there is no Save button: keep the choice.
+          if (!designerMode && selectedPath) {
+            void invoke('save_dash_file', { path: selectedPath, dashFile: newFile }).catch((e) =>
+              console.error('[TsDashboard] Failed to save the replaced gauge:', e),
+            );
+          }
           closeContextMenu();
         }}
       />

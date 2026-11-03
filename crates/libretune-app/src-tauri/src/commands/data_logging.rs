@@ -1,3 +1,4 @@
+// Modified 2026-11-03 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Data logging Tauri commands.
 
 use libretune_core::datalog::DataLogger;
@@ -150,7 +151,7 @@ pub async fn start_logging(
     existing.sort();
     incoming.sort();
     if existing != incoming {
-        *logger = DataLogger::new(channels);
+        *logger = DataLogger::new(channels.clone());
     }
 
     let units: Vec<String> = logger
@@ -202,6 +203,15 @@ pub async fn start_logging(
     crate::state::LOGGER_SAMPLES_DROPPED.store(0, std::sync::atomic::Ordering::Relaxed);
     crate::state::LOGGER_RECORDING.store(true, std::sync::atomic::Ordering::Relaxed);
 
+    // HaniCore fork: the logged channels are read on every poll (a focus).
+    // Only when the INI declares no [Datalog] (every channel is logged) does
+    // the stream fall back to whole-block reads (LOG_NEEDS_ALL).
+    let logged = if def.datalog_entries.is_empty() { Vec::new() } else { channels.clone() };
+    crate::state::LOG_NEEDS_ALL.store(logged.is_empty(), std::sync::atomic::Ordering::Relaxed);
+    drop(logger);
+    drop(def_guard);
+    super::runtime_focus::set_logged_channels(&state, logged).await;
+
     Ok(())
 }
 
@@ -210,6 +220,8 @@ pub async fn stop_logging(state: tauri::State<'_, AppState>) -> Result<(), Strin
     let mut logger = state.data_logger.lock().await;
     logger.stop();
     crate::state::LOGGER_RECORDING.store(false, std::sync::atomic::Ordering::Relaxed);
+    drop(logger);
+    super::runtime_focus::set_logged_channels(&state, Vec::new()).await;
     Ok(())
 }
 

@@ -1,3 +1,4 @@
+// Modified 2026-11-03 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! start_realtime_stream and feed_autotune_data (extracted from lib.rs).
 
 use std::collections::HashMap;
@@ -58,6 +59,7 @@ const REALTIME_CHANNEL_ALIASES: &[(&str, &[&str])] = &[
             "ignitionAdvance",
             "ignAdv",
             "Advance",
+            "ignitionTiming", // HaniCore
         ],
     ),
     (
@@ -93,11 +95,18 @@ const REALTIME_CHANNEL_ALIASES: &[(&str, &[&str])] = &[
             "pulseWidth",
             "pw1",
             "PW1",
+            "injectorPulseWidth", // HaniCore
         ],
     ),
     (
         "dutyCycle",
-        &["injectorDutyCycle", "dutyCycle", "injDuty", "InjectorDuty"],
+        &[
+            "injectorDutyCycle",
+            "dutyCycle",
+            "injDuty",
+            "InjectorDuty",
+            "injectorDuty", // HaniCore
+        ],
     ),
     ("lambda", &["lambda", "Lambda", "lambdaValue", "wbo2"]),
     (
@@ -109,6 +118,7 @@ const REALTIME_CHANNEL_ALIASES: &[(&str, &[&str])] = &[
             "Dwell",
             "dwellAngle",
             "baseDwell",
+            "coilDwell", // HaniCore
         ],
     ),
     ("baro", &["baroPressure", "baro", "BaroPressure"]),
@@ -160,6 +170,46 @@ pub(crate) fn apply_channel_aliases(data: &mut HashMap<String, f64>) {
             data.insert("correction".to_string(), v * 100.0);
         }
     }
+
+    // HaniCore sends lambda only; its stoichiometric ratio is targetAfr / targetLambda.
+    if !data.contains_key("afr") {
+        if let (Some(&lam), Some(&tafr), Some(&tlam)) = (
+            data.get("lambdaValue"),
+            data.get("targetAfr"),
+            data.get("targetLambda"),
+        ) {
+            if tlam > 0.0 {
+                data.insert("afr".to_string(), lam * tafr / tlam);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hanicore_channels_reach_the_tuning_dashboard() {
+        let mut d: HashMap<String, f64> = [
+            ("ignitionTiming", 12.5),
+            ("injectorPulseWidth", 3.2),
+            ("injectorDuty", 18.0),
+            ("coilDwell", 2.5),
+            ("lambdaValue", 1.0),
+            ("targetAfr", 14.7),
+            ("targetLambda", 0.98),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), *v))
+        .collect();
+        apply_channel_aliases(&mut d);
+        assert_eq!(d["advance"], 12.5);
+        assert_eq!(d["pulseWidth"], 3.2);
+        assert_eq!(d["dutyCycle"], 18.0);
+        assert_eq!(d["dwell"], 2.5);
+        assert!((d["afr"] - 15.0).abs() < 1e-9);
+    }
 }
 
 /// Feed the current realtime snapshot to the data logger when a recording is
@@ -196,7 +246,13 @@ pub(crate) async fn feed_data_logger(app_state: &AppState, data: &HashMap<String
     let values: Vec<f64> = logger
         .channels()
         .iter()
-        .map(|name| data.get(name).copied().unwrap_or(0.0))
+        // Log entries go to the UI as JSON, which cannot carry NaN/Infinity.
+        .map(|name| {
+            data.get(name)
+                .copied()
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.0)
+        })
         .collect();
     logger.record(values);
 }
@@ -345,6 +401,15 @@ pub(crate) async fn feed_autotune_data(
         .or_else(|| data.get("coolantTemperature"))
         .copied()
         .unwrap_or(0.0);
+
+    // A non-finite reading is not data: NaN passes every `<`/`>` range filter
+    // and would poison `last_tps`, so drop the tick.
+    if ![rpm, load_value, afr, ve, clt, tps]
+        .iter()
+        .all(|v| v.is_finite())
+    {
+        return;
+    }
 
     // `tps` was read above (before load_value) so a TPS load source can use it.
 
@@ -805,6 +870,13 @@ pub async fn start_realtime_stream(
                         Ok(mut conn_guard) => {
                             set_conn_lock_holder("stream_loop");
                             if let Some(conn) = conn_guard.as_mut() {
+                                // HaniCore fork: a recording log wants every channel fresh
+                                conn.pause_och_focus(
+                                    crate::state::LOGGER_RECORDING
+                                        .load(std::sync::atomic::Ordering::Relaxed)
+                                        && crate::state::LOG_NEEDS_ALL
+                                            .load(std::sync::atomic::Ordering::Relaxed),
+                                );
                                 raw_result = conn.get_realtime_data().map_err(|e| e.to_string());
                             } else {
                                 raw_result = Err("No connection".to_string());
@@ -944,15 +1016,14 @@ pub async fn start_realtime_stream(
 
                         apply_channel_aliases(&mut data);
 
-                        // Sanitize NaN/Infinity — serde_json cannot serialize these,
-                        // which would silently break app_handle.emit().
-                        for v in data.values_mut() {
-                            if !v.is_finite() {
-                                *v = 0.0;
-                            }
-                        }
-
-                        if let Err(e) = app_handle.emit("realtime:update", &data) {
+                        // Sanitize NaN/Infinity for the emit only — serde_json cannot
+                        // serialize these. `data` stays untouched so AutoTune and the
+                        // logger never see a fabricated 0.0.
+                        let emit_data: HashMap<&String, f64> = data
+                            .iter()
+                            .map(|(k, v)| (k, if v.is_finite() { *v } else { 0.0 }))
+                            .collect();
+                        if let Err(e) = app_handle.emit("realtime:update", &emit_data) {
                             stream_log(&format!("emit FAILED (real): {}", e));
                         }
 

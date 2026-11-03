@@ -110,7 +110,7 @@ use commands::ini_dialogs::{
     save_port_editor_assignments,
 };
 use commands::ini_meta::{
-    get_curves, get_frontpage, get_gauge_config, get_gauge_configs, get_tables,
+    get_curves, get_frontpage, get_gauge_categories, get_gauge_config, get_gauge_configs, get_tables,
 };
 use commands::ini_metadata::{
     get_ini_capabilities, get_protocol_capabilities, get_protocol_defaults, get_ve_analyze_config,
@@ -158,6 +158,7 @@ use commands::settings::{
 use commands::start_autotune::start_autotune;
 use commands::sync_ecu_data::sync_ecu_data;
 use commands::page_refresh::{get_page_refresh_triggers, refresh_page_from_ecu};
+use commands::runtime_focus::set_runtime_focus;
 use commands::system::{get_build_info, get_serial_ports};
 use commands::table_compare::compare_tables;
 use commands::table_file_io::{export_table_to_file, import_table_from_file};
@@ -254,6 +255,7 @@ pub fn run() {
             connect_to_ecu,
             sync_ecu_data,
             get_page_refresh_triggers,
+            set_runtime_focus,
             refresh_page_from_ecu,
             get_tune_mismatch_dialog_index,
             get_tune_mismatch_dialog_view,
@@ -279,6 +281,7 @@ pub fn run() {
             get_tables,
             get_curves,
             get_gauge_configs,
+            get_gauge_categories,
             get_gauge_config,
             get_available_channels,
             get_output_channel_status,

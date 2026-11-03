@@ -1,3 +1,4 @@
+// Modified 2026-11-04 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Gauge configuration parser
 //!
 //! Parses [GaugeConfigurations] section for dashboard gauge definitions.
@@ -60,6 +61,14 @@ pub struct GaugeConfig {
     pub high_warning_expr: Option<String>,
     #[serde(default)]
     pub high_danger_expr: Option<String>,
+
+    /// The `gaugeCategory = "..."` this gauge was declared under ("" = none)
+    /// and its position in the INI, so pickers can list the gauges grouped
+    /// and in the INI's order (`gauges` is a HashMap).
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub order: usize,
 }
 
 impl GaugeConfig {
@@ -83,6 +92,8 @@ impl GaugeConfig {
             low_warning_expr: None,
             high_warning_expr: None,
             high_danger_expr: None,
+            category: String::new(),
+            order: 0,
         }
     }
 

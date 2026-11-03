@@ -41,6 +41,8 @@ struct ParserState {
     /// Name of the `settingGroup` most recently opened in `[SettingGroups]`,
     /// so its `settingOption` lines attach to it.
     current_setting_group: Option<String>,
+    /// The `gaugeCategory` most recently opened in `[GaugeConfigurations]`.
+    current_gauge_category: String,
     /// `tableLimits` rows seen in the current `referenceTable` block; applied
     /// to its identifiers when the block closes (they may appear either side
     /// of the `tableIdentifier` line they annotate).
@@ -175,6 +177,7 @@ fn parse_ini_internal(content: &str, ctx: &mut IncludeContext) -> Result<EcuDefi
         current_help: None,
         current_reference_table: None,
         current_setting_group: None,
+        current_gauge_category: String::new(),
         pending_reference_limits: Vec::new(),
     };
 
@@ -404,7 +407,12 @@ fn parse_ini_internal(content: &str, ctx: &mut IncludeContext) -> Result<EcuDefi
                 ),
                 "outputchannels" => parse_output_channel_entry(&mut definition, key, value),
                 "burstmode" => parse_burst_mode_entry(&mut definition, key, value),
-                "gaugeconfigurations" => parse_gauge_entry(&mut definition, key, value),
+                "gaugeconfigurations" => parse_gauge_entry(
+                    &mut definition,
+                    key,
+                    value,
+                    &mut state.current_gauge_category,
+                ),
                 "settinggroups" => parse_setting_group_entry(
                     &mut definition,
                     key,
@@ -1414,8 +1422,16 @@ fn parse_burst_mode_entry(def: &mut EcuDefinition, key: &str, value: &str) {
 }
 
 /// Parse [GaugeConfigurations] section entries
-fn parse_gauge_entry(def: &mut EcuDefinition, key: &str, value: &str) {
-    if let Some(gauge) = parse_gauge_line(key, value) {
+fn parse_gauge_entry(def: &mut EcuDefinition, key: &str, value: &str, category: &mut String) {
+    // `gaugeCategory = "Ignition"` opens a group; it is not a gauge (it used
+    // to be parsed as one, on a channel named after the category).
+    if key.eq_ignore_ascii_case("gaugeCategory") {
+        *category = value.trim().trim_matches('"').to_string();
+        return;
+    }
+    if let Some(mut gauge) = parse_gauge_line(key, value) {
+        gauge.category = category.clone();
+        gauge.order = def.gauges.len();
         def.gauges.insert(key.to_string(), gauge);
     }
 }
@@ -4780,6 +4796,32 @@ table = veTable1, veTableMap, "VE Table"
         // When x_bins and y_bins are not specified, infer from the 2D map
         assert_eq!(table.x_size, 8, "x_size should be 8 (cols from [8x12])");
         assert_eq!(table.y_size, 12, "y_size should be 12 (rows from [8x12])");
+    }
+
+    #[test]
+    fn gauge_categories_group_gauges_and_are_not_gauges() {
+        // HaniCore INIs group their 600+ gauges with gaugeCategory lines;
+        // the dashboard's Replace Gauge list is built from them.
+        let content = r#"
+[MegaTune]
+signature = "TestECU"
+
+[GaugeConfigurations]
+   gaugeCategory = "Engine"
+   rpmGauge = rpm, "Engine speed", "rpm", 0, 8000, 0, 0, 7000, 7500, 0, 0
+   gaugeCategory = "Ignition"
+   ignitionTimingGauge = ignitionTiming, "Ignition timing", "deg", -30, 60, -30, -20, 45, 55, 1, 1
+   dwellGauge = dwellMs, "Dwell", "ms", 0, 10, 0, 0, 8, 9, 1, 1
+"#;
+        let def = parse_ini(content).expect("parse");
+        assert!(!def.gauges.contains_key("gaugeCategory"));
+        assert_eq!(def.gauges.len(), 3);
+        let t = &def.gauges["ignitionTimingGauge"];
+        assert_eq!(t.category, "Ignition");
+        assert_eq!(t.channel, "ignitionTiming");
+        assert_eq!(def.gauges["rpmGauge"].category, "Engine");
+        assert!(def.gauges["rpmGauge"].order < t.order);
+        assert!(t.order < def.gauges["dwellGauge"].order);
     }
 
     #[test]

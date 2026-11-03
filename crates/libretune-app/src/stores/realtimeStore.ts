@@ -1,3 +1,4 @@
+// Modified 2026-11-03 in the HaniCore K-line fork of LibreTune (see FORK.md).
 /**
  * Zustand store for realtime ECU data with optimized selectors.
  * 
@@ -8,6 +9,60 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { useShallow } from 'zustand/react/shallow';
+import { useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+
+/* HaniCore fork: WHAT THE SCREEN SHOWS. Every mounted consumer of a live
+   value (status bar, readouts, gauges, live graphs) holds its channels here;
+   the backend reads their bytes on every poll and the rest of the block a
+   slice per poll (set_runtime_focus) - on K-line the whole block is ~0.3 s. */
+const _onScreen = new Map<string, number>();
+let _focusTimer: ReturnType<typeof setTimeout> | null = null;
+let _focusSent = '';
+function _pushFocus(force = false) {
+  const names = Array.from(_onScreen.keys()).sort();
+  const key = names.join('|');
+  if (!force && key === _focusSent) return;
+  _focusSent = key;
+  invoke('set_runtime_focus', { channels: names }).catch(() => {
+    _focusSent = '';
+  });
+}
+function _scheduleFocus() {
+  if (_focusTimer) return;
+  _focusTimer = setTimeout(() => {
+    _focusTimer = null;
+    _pushFocus();
+  }, 150);
+}
+// re-sent now and then: a reconnect builds a new connection without it
+if (typeof window !== 'undefined') {
+  window.setInterval(() => _pushFocus(true), 5000);
+}
+export function acquireChannels(names: string[]): void {
+  for (const n of names) {
+    if (!n) continue;
+    _onScreen.set(n, (_onScreen.get(n) ?? 0) + 1);
+  }
+  _scheduleFocus();
+}
+export function releaseChannels(names: string[]): void {
+  for (const n of names) {
+    const c = (_onScreen.get(n) ?? 0) - 1;
+    if (c > 0) _onScreen.set(n, c);
+    else _onScreen.delete(n);
+  }
+  _scheduleFocus();
+}
+/** Hold `names` as on-screen while the calling component is mounted. */
+export function useOnScreenChannels(names: string[]): void {
+  const key = names.join('|');
+  useEffect(() => {
+    const list = key ? key.split('|') : [];
+    acquireChannels(list);
+    return () => releaseChannels(list);
+  }, [key]);
+}
 
 interface RealtimeState {
   /** All channel values keyed by channel name */
@@ -144,8 +199,10 @@ export const useRealtimeStore = create<RealtimeState>()(
  *   return <div>RPM: {rpm ?? 0}</div>;
  * }
  */
-export const useChannel = (name: string): number | undefined =>
-  useRealtimeStore((state) => state.channels[name]);
+export const useChannel = (name: string): number | undefined => {
+  useOnScreenChannels([name]);
+  return useRealtimeStore((state) => state.channels[name]);
+};
 
 /**
  * Hook to get a single channel value with a default fallback.
@@ -161,8 +218,10 @@ export const useChannel = (name: string): number | undefined =>
  *   return <Gauge value={value} />;
  * }
  */
-export const useChannelValue = (name: string, defaultValue = 0): number =>
-  useRealtimeStore((state) => state.channels[name] ?? defaultValue);
+export const useChannelValue = (name: string, defaultValue = 0): number => {
+  useOnScreenChannels([name]);
+  return useRealtimeStore((state) => state.channels[name] ?? defaultValue);
+};
 
 /**
  * Hook to get multiple channel values at once.
@@ -185,6 +244,7 @@ export const useChannelValue = (name: string, defaultValue = 0): number =>
  * }
  */
 export const useChannels = (names: string[]): Record<string, number> => {
+  useOnScreenChannels(names);
   // useShallow wraps the selector so Zustand uses shallow comparison on the
   // returned object.  The component only re-renders when a requested channel's
   // numeric VALUE actually changes — not on every store set() call.

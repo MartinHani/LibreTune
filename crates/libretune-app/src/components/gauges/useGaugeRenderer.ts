@@ -1,3 +1,4 @@
+// Modified 2026-11-03 in the HaniCore K-line fork of LibreTune (see FORK.md).
 /**
  * `useGaugeRenderer` — the rendering host shared by every `<TsGauge>`.
  *
@@ -19,7 +20,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { TsGaugeConfig } from '../dashboards/dashTypes';
-import { useRealtimeStore } from '../../stores/realtimeStore';
+import { useOnScreenChannels, useRealtimeStore } from '../../stores/realtimeStore';
 import { seedPeak, nextPeakState, type PeakState } from './peakTracking';
 import { emaStep, isSpike, staggerSlotForChannel, STAGGER_SLOTS, SPIKE_FLASH_MS } from './ema';
 import { getDrawIntervalMs } from './renderSettings';
@@ -93,6 +94,8 @@ export interface UseGaugeRendererResult {
 
 export function useGaugeRenderer(opts: UseGaugeRendererOptions): UseGaugeRendererResult {
   const { config, value, overrideStore, enabled, paint, continuousRender } = opts;
+  // HaniCore fork: a drawn gauge is on screen - its channel is read fast
+  useOnScreenChannels(enabled === false || overrideStore || !config.output_channel ? [] : [config.output_channel]);
 
   // Spike-flash output: caller-supplied ref wins; internal fallback otherwise.
   const internalSpikeRef = useRef(false);

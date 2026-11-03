@@ -1,3 +1,4 @@
+// Modified 2026-11-04 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! INI metadata commands (tables, curves, frontpage, gauges).
 
 use crate::commands::string_context::{build_string_context, numeric_context_from_tune};
@@ -77,6 +78,29 @@ pub async fn get_curves(state: tauri::State<'_, AppState>) -> Result<Vec<CurveIn
 }
 
 /// Gauge configuration info returned to frontend
+/// One `gaugeCategory` of [GaugeConfigurations] with its gauges in INI order
+/// (the dashboard's right-click "Replace gauge" list).
+#[derive(Serialize)]
+pub(crate) struct GaugeCategoryInfo {
+    pub name: String,
+    pub gauges: Vec<GaugePickInfo>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct GaugePickInfo {
+    pub name: String,
+    pub channel: String,
+    pub title: String,
+    pub units: String,
+    pub min: f64,
+    pub max: f64,
+    pub low_warning: f64,
+    pub high_warning: f64,
+    pub low_danger: f64,
+    pub high_danger: f64,
+    pub digits: u8,
+}
+
 #[derive(Serialize)]
 pub(crate) struct GaugeInfo {
     pub name: String,
@@ -220,6 +244,60 @@ fn gauge_to_info(
         low_danger: resolve_gauge_field(g.low_danger, g.low_danger_expr.as_deref(), ctx),
         high_danger: resolve_gauge_field(g.high_danger, g.high_danger_expr.as_deref(), ctx),
         digits: g.digits,
+    }
+}
+
+/// The INI's gauges grouped by `gaugeCategory`, categories and gauges in INI
+/// order. The dashboard's gauge picker called this command before it existed
+/// and fell back to a generic list (rpm/map/advance ...) whose channel names
+/// a HaniCore INI does not have - so no gauge could be swapped for e.g.
+/// ignition timing.
+#[tauri::command]
+pub async fn get_gauge_categories(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<GaugeCategoryInfo>, String> {
+    let string_ctx = build_string_context(&state).await;
+
+    let def_guard = state.definition.lock().await;
+    let def = def_guard.as_ref().ok_or("Definition not loaded")?;
+    // Same lock order as get_all_constant_values: definition → cache → tune.
+    let cache_guard = state.tune_cache.lock().await;
+    let tune_guard = state.current_tune.lock().await;
+    let ctx = gauge_expr_context(def, tune_guard.as_ref(), cache_guard.as_ref());
+
+    let mut gauges: Vec<&libretune_core::ini::GaugeConfig> = def.gauges.values().collect();
+    gauges.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.name.cmp(&b.name)));
+
+    let mut out: Vec<GaugeCategoryInfo> = Vec::new();
+    for g in gauges {
+        let cat = if g.category.is_empty() { "Other".to_string() } else { g.category.clone() };
+        let i = g_info(g, &ctx, &string_ctx);
+        match out.iter_mut().find(|c| c.name == cat) {
+            Some(c) => c.gauges.push(i),
+            None => out.push(GaugeCategoryInfo { name: cat, gauges: vec![i] }),
+        }
+    }
+    Ok(out)
+}
+
+fn g_info(
+    g: &libretune_core::ini::GaugeConfig,
+    ctx: &std::collections::HashMap<String, f64>,
+    string_ctx: &libretune_core::ini::expression::StringContext,
+) -> GaugePickInfo {
+    let i = gauge_to_info(g, ctx, string_ctx);
+    GaugePickInfo {
+        name: i.name,
+        channel: i.channel,
+        title: if i.title.is_empty() { g.name.clone() } else { i.title },
+        units: i.units,
+        min: i.lo,
+        max: i.hi,
+        low_warning: i.low_warning,
+        high_warning: i.high_warning,
+        low_danger: i.low_danger,
+        high_danger: i.high_danger,
+        digits: i.digits,
     }
 }
 

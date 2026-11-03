@@ -1,3 +1,4 @@
+// Modified 2026-11-03 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Command Builder
 //!
 //! Builds protocol commands from INI format strings.
@@ -70,6 +71,16 @@ impl CommandBuilder {
     /// e.g., "O%2o%2c" with offset=0, count=ochBlockSize
     pub fn build_och_command(&self, format: &str, count: u16) -> Result<Vec<u8>, ProtocolError> {
         self.build_command(format, 0, 0, count, &[])
+    }
+
+    /// HaniCore fork: an OCH read of `count` bytes from `offset` ("O%2o%2c").
+    pub fn build_och_range(
+        &self,
+        format: &str,
+        offset: u16,
+        count: u16,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        self.build_command(format, 0, offset, count, &[])
     }
 
     /// Generic command builder that parses format string and substitutes values

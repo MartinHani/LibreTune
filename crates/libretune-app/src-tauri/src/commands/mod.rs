@@ -72,6 +72,7 @@ pub mod start_autotune;
 pub mod string_context;
 pub mod sync_ecu_data;
 pub mod page_refresh;
+pub mod runtime_focus;
 pub mod system;
 pub mod table_compare;
 pub mod table_file_io;

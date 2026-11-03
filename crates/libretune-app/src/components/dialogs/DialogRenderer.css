@@ -1,3 +1,4 @@
+/* Modified 2026-11-03 in the HaniCore K-line fork of LibreTune (see FORK.md). */
 .dialog-view {
   display: flex;
   flex-direction: column;
@@ -58,7 +59,7 @@
    sub-element into full width (multi-column split, embedded 2D table,
    hardware-test grid, wide command-button panel) needs the container to
    stay uncapped for that to actually reach full width. */
-.dialog-view .dialog-container:not(:has(.dialog-row-container)):not(:has(.nested-panel--multi)):not(:has(.table-editor-2d)):not(:has(.hardware-test-layout)):not(:has(.nested-panel--compact-commands)):not(:has(.curve-editor)):not(:has(.dialog-row-xaxis)) {
+.dialog-view .dialog-container:not(:has(.dialog-row-container)):not(:has(.nested-panel--multi)):not(:has(.table-editor-2d)):not(:has(.hardware-test-layout)):not(:has(.nested-panel--compact-commands)):not(:has(.curve-editor)):not(:has(.dialog-row-xaxis)):not(:has(.embedded-live-graph)) {
   max-width: 720px;
 }
 
@@ -536,6 +537,7 @@
 .dialog-view .panel-content--multi > .dialog-label,
 .dialog-view .panel-content--multi > .dialog-label.dialog-link,
 .dialog-view .panel-content--multi > .embedded-graph-placeholder,
+.dialog-view .panel-content--multi > .embedded-live-graph,
 .dialog-view .panel-content--multi > .command-button-field,
 .dialog-view .panel-content--multi > .runtime-value-row {
   grid-column: 1 / -1;
@@ -1175,4 +1177,43 @@
 
 .dialog-view .nested-panel--gauge-stack:empty {
   display: none;
+}
+
+/* HaniCore fork: liveGraph strips */
+.embedded-live-graph {
+  width: 100%;
+  min-width: 320px;
+  padding: 0.375rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-sizing: border-box;
+}
+.embedded-live-graph canvas { display: block; width: 100%; }
+.embedded-live-graph-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 0.25rem;
+}
+.embedded-live-graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+}
+.embedded-live-graph-item { display: inline-flex; align-items: center; gap: 0.3rem; }
+.embedded-live-graph-item i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.embedded-live-graph-value { font-family: var(--font-mono, monospace); }
+
+/* HaniCore fork: a panel holding a live graph spans the window (the 720 px
+   form cap above is for field panels; a time trace wants every pixel). */
+.dialog-view .nested-panel:has(.embedded-live-graph) {
+  max-width: 100%;
+}
+.dialog-view .dialog-row-container:has(.embedded-live-graph),
+.dialog-view .dialog-column:has(.embedded-live-graph) {
+  width: 100%;
+  max-width: none;
 }

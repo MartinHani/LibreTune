@@ -1,7 +1,7 @@
 // Modified 2026-11-01 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Cross-file tune comparison and merge Tauri commands.
 
-use libretune_core::tune::{TuneDiff, TuneFile, TuneValue};
+use libretune_core::tune::{TuneDiff, TuneFile};
 
 use crate::state::AppState;
 
@@ -37,21 +37,20 @@ pub async fn merge_from_tune(
 
     if merged > 0 {
         if let (Some(cache), Some(def)) = (cache_guard.as_mut(), def_guard.as_ref()) {
-            for name in &constant_names {
-                if let Some(value) = source.constants.get(name) {
-                    if let Some(constant) = def.constants.get(name) {
-                        if let TuneValue::Scalar(v) = value {
-                            // The whole field, in the INI's conversion - this
-                            // wrote only the low byte, raw = (v - translate) / scale.
-                            let raw = constant.display_to_raw(*v);
-                            let endian = constant.endianness_override.unwrap_or(def.endianness);
-                            let mut bytes = vec![0u8; constant.data_type.size_bytes()];
-                            constant.data_type.write_to_bytes(&mut bytes, 0, raw, endian);
-                            cache.write_bytes(constant.page, constant.offset, &bytes);
-                        }
-                    }
-                }
-            }
+            // Encode via the shared helper (width, endianness, bits, arrays,
+            // strings) - upstream 2026-11-01 (ee7dc7c), which also covers the
+            // fork's earlier whole-field scalar fix.
+            let mut selected = TuneFile::new("");
+            selected.constants = constant_names
+                .iter()
+                .filter_map(|n| Some((n.clone(), source.constants.get(n)?.clone())))
+                .collect();
+            super::tune_apply::apply_tune_constants_to_cache(
+                cache,
+                def,
+                &selected,
+                &Default::default(),
+            );
         }
     }
 

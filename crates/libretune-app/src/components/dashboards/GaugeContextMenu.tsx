@@ -1,3 +1,4 @@
+// Modified 2026-11-04 in the HaniCore K-line fork of LibreTune (see FORK.md).
 /**
  * Gauge Context Menu
  * 
@@ -104,35 +105,10 @@ export default function GaugeContextMenu({
         const categories = await invoke<GaugeCategory[]>('get_gauge_categories');
         setGaugeCategories(categories);
       } catch (_e) {
-        // Backend command not yet implemented — use fallback defaults
-        // Provide some default categories if backend doesn't have them yet
-        setGaugeCategories([
-          {
-            name: 'Sensors - Basic',
-            gauges: [
-              { name: 'rpm', channel: 'rpm', title: 'RPM', units: '', min: 0, max: 8000 },
-              { name: 'map', channel: 'map', title: 'MAP', units: 'kPa', min: 0, max: 250 },
-              { name: 'tps', channel: 'tps', title: 'TPS', units: '%', min: 0, max: 100 },
-              { name: 'coolant', channel: 'coolant', title: 'Coolant', units: '°C', min: -40, max: 120 },
-              { name: 'iat', channel: 'iat', title: 'IAT', units: '°C', min: -40, max: 80 },
-            ],
-          },
-          {
-            name: 'Fueling',
-            gauges: [
-              { name: 'afr', channel: 'afr', title: 'AFR', units: '', min: 10, max: 20 },
-              { name: 've', channel: 've', title: 'VE', units: '%', min: 0, max: 150 },
-              { name: 'pulseWidth1', channel: 'pulseWidth1', title: 'PW', units: 'ms', min: 0, max: 20 },
-            ],
-          },
-          {
-            name: 'Ignition',
-            gauges: [
-              { name: 'advance', channel: 'advance', title: 'Advance', units: '°', min: -10, max: 50 },
-              { name: 'dwell', channel: 'dwell', title: 'Dwell', units: 'ms', min: 0, max: 10 },
-            ],
-          },
-        ]);
+        // No INI loaded: nothing to pick. (A generic rpm/map/advance list
+        // used to stand in here; its channel names exist in no HaniCore INI,
+        // so a replaced gauge showed nothing.)
+        setGaugeCategories([]);
       }
     };
 
@@ -167,14 +143,16 @@ export default function GaugeContextMenu({
         Reload Default Gauges
       </div>
 
-      {/* TS/LibreTune Gauges Submenu (Designer Mode Only) */}
-      {designerMode && (
+      {/* Replace the right-clicked gauge with any gauge the INI defines
+          (TunerStudio's right-click list) - on the normal dashboard too,
+          not only in designer mode. */}
+      {(designerMode || state.targetGaugeId) && gaugeCategories.length > 0 && (
         <>
           <div
             className="menu-item has-submenu"
             onMouseEnter={() => setExpandedSubmenu('gauges')}
           >
-            TS/LibreTune Gauges
+            Replace Gauge
             <span className="submenu-arrow">▶</span>
             
             {expandedSubmenu === 'gauges' && (
@@ -182,14 +160,14 @@ export default function GaugeContextMenu({
                 {gaugeCategories.map((category) => (
                   <div
                     key={category.name}
-                    className="menu-item has-submenu"
+                    className="menu-item has-submenu gauge-category"
                     onMouseEnter={() => setExpandedCategory(category.name)}
                   >
                     {category.name}
                     <span className="submenu-arrow">▶</span>
                     
                     {expandedCategory === category.name && (
-                      <div className="submenu">
+                      <div className="submenu gauge-list">
                         {category.gauges.map((gauge) => (
                           <div
                             key={gauge.channel}

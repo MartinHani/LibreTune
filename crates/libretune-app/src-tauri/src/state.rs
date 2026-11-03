@@ -1,3 +1,4 @@
+// Modified 2026-11-03 in the HaniCore K-line fork of LibreTune (see FORK.md).
 //! Application-level state held by Tauri.
 //!
 //! `AppState` is `manage()`d on startup and accessed by every Tauri command
@@ -119,6 +120,11 @@ pub static LOGGER_SAMPLES_DROPPED: std::sync::atomic::AtomicU64 =
 /// (lock busy *while recording*) from ordinary idle contention, without paying
 /// for the data-logger lock on the hot path.
 pub static LOGGER_RECORDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// HaniCore fork: the recording log names no [Datalog] list (every channel is
+/// logged), so runtime reads must be whole blocks (runtime_focus.rs).
+pub static LOG_NEEDS_ALL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
