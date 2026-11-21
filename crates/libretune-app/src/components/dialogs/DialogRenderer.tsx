@@ -103,7 +103,16 @@ export default function DialogRenderer({ definition, onBack, openTable, context,
         {definition.topic_help && (
           <button
             onClick={() => {
-              openUrl(definition.topic_help!).catch((err) =>
+              const topic = definition.topic_help!;
+              // HaniCore fork 2026-11-22: a TunerStudio topicHelp may name a
+              // help topic ([SettingContextHelp]/help = ...), not only a URL
+              if (!/^https?:\/\//i.test(topic)) {
+                window.dispatchEvent(new CustomEvent('libretune:open-help-topic', {
+                  detail: { name: topic, title: displayTitle || definition.title },
+                }));
+                return;
+              }
+              openUrl(topic).catch((err) =>
                 console.error('[DialogRenderer] Failed to open help URL:', err)
               );
             }}

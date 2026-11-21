@@ -1514,6 +1514,16 @@ function AppContent() {
     []
   );
 
+  // HaniCore fork 2026-11-22: a dialog's topicHelp button names a help topic
+  useEffect(() => {
+    const onTopic = (e: Event) => {
+      const d = (e as CustomEvent<{ name: string; title: string }>).detail;
+      if (d?.name) openHelpTopic(d.name, d.title);
+    };
+    window.addEventListener('libretune:open-help-topic', onTopic);
+    return () => window.removeEventListener('libretune:open-help-topic', onTopic);
+  }, [openHelpTopic]);
+
   // Call a stub backend command - shows "coming soon" toast on expected error
   // Tab handlers
   const handleTabSelect = useCallback((tabId: string) => {

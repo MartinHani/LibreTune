@@ -379,9 +379,11 @@ export default function DialogField({
                 let displayText = opt?.trim() || '';
                 if (displayText === '') displayText = 'Not Assigned';
                 // Remove any index prefix (e.g. '0="NONE"' -> 'NONE')
-                const eqIdx = displayText.indexOf('=');
-                if (eqIdx !== -1) {
-                  displayText = displayText.substring(eqIdx + 1).replace(/^"|"$/g, '').trim();
+                // HaniCore fork 2026-11-22: only a NUMERIC index prefix ('0="NONE"');
+                // an '=' inside the label is text ("(min = closed)" showed "closed)")
+                const idxPrefix = displayText.match(/^\s*\d+\s*=\s*/);
+                if (idxPrefix) {
+                  displayText = displayText.substring(idxPrefix[0].length).replace(/^"|"$/g, '').trim();
                 }
                 // Remove any surrounding quotes
                 displayText = displayText.replace(/^"|"$/g, '');

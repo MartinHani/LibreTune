@@ -106,7 +106,7 @@
 
 @container (max-width: 440px) {
   .dialog-view .panel-content--multi {
-    grid-template-columns: 1fr;
+    columns: 1;
   }
 }
 
@@ -116,7 +116,7 @@
    labels ("Detect Tuning and Suspend"). Force single column here regardless
    of exact pixel width; TunerStudio renders these same panels as one column. */
 .dialog-view .dialog-row-xaxis .panel-content--multi {
-  grid-template-columns: 1fr;
+  columns: 1;
 }
 
 .dialog-view .dialog-row-container--settings-split {
@@ -527,11 +527,16 @@
 }
 
 /* Split long forms into two side-by-side columns */
+/* HaniCore fork 2026-11-22: TOP-DOWN, in the INI's order (a TunerStudio
+   panel is one column; a row-major grid interleaved "track 1 | track 2"). */
 .dialog-view .panel-content--multi {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  display: block;
+  columns: 2 220px;
   column-gap: 12px;
   padding: 0 8px 4px;
+}
+.dialog-view .panel-content--multi > * {
+  break-inside: avoid;
 }
 
 .dialog-view .panel-content--multi > .dialog-label,
@@ -541,6 +546,7 @@
 .dialog-view .panel-content--multi > .command-button-field,
 .dialog-view .panel-content--multi > .runtime-value-row {
   grid-column: 1 / -1;
+  column-span: all;
 }
 
 .dialog-view .panel-content--multi .settings-field {
