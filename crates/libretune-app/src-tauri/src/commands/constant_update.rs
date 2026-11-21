@@ -180,6 +180,22 @@ pub(crate) async fn update_constant_internal(
             }
         }
 
+        // HaniCore fork: the ECU FIRST, the app's copy only once it took the
+        // value. In the other order a failed write left the app showing a value
+        // the ECU never got, and picking it again sent nothing (bench 2026-11-05).
+        // A lost reply can still leave the ECU ahead: the user sees the error and
+        // the same choice writes again.
+        if let Some(conn) = conn_guard.as_mut() {
+            let params = libretune_core::protocol::commands::WriteMemoryParams {
+                can_id: 0,
+                page: constant.page,
+                offset: read_offset,
+                data: existing_bytes.clone(),
+            };
+            conn.write_memory(params)
+                .map_err(|e| format!("Failed to write bits constant '{name}' to ECU: {e}"))?;
+        }
+
         // Write modified bytes to cache
         if let Some(cache) = cache_guard.as_mut() {
             cache.write_bytes(constant.page, read_offset, &existing_bytes);
@@ -202,22 +218,6 @@ pub(crate) async fn update_constant_internal(
         // Mark tune as modified
         *state.tune_modified.lock().await = true;
 
-        // Write to ECU if connected
-        if let Some(conn) = conn_guard.as_mut() {
-            let params = libretune_core::protocol::commands::WriteMemoryParams {
-                can_id: 0,
-                page: constant.page,
-                offset: read_offset,
-                data: existing_bytes,
-            };
-            // A failed ECU write must not report success: the cache,
-            // `current_tune` and `tune_modified` are already committed here, so
-            // swallowing the error leaves the app's copy silently diverged from
-            // the ECU. Offline editing is the `conn_guard == None` case, not this.
-            conn.write_memory(params)
-                .map_err(|e| format!("Failed to write bits constant '{name}' to ECU: {e}"))?;
-        }
-
         eprintln!(
             "[DEBUG] update_constant: Updated bits constant '{}' to value {}",
             name, value
@@ -231,6 +231,20 @@ pub(crate) async fn update_constant_internal(
     constant
         .data_type
         .write_to_bytes(&mut raw_data, 0, raw_val, endianness);
+
+    // HaniCore fork: the ECU first, as above. Offline mode is the
+    // `conn_guard == None` case; once a connection exists a failed write is a
+    // real failure and the app keeps the value the ECU holds.
+    if let Some(conn) = conn_guard.as_mut() {
+        let params = libretune_core::protocol::commands::WriteMemoryParams {
+            can_id: 0,
+            page: constant.page,
+            offset: constant.offset,
+            data: raw_data.clone(),
+        };
+        conn.write_memory(params)
+            .map_err(|e| format!("Failed to write constant '{name}' to ECU: {e}"))?;
+    }
 
     // Always write to TuneCache if available (enables offline editing)
     if let Some(cache) = cache_guard.as_mut() {
@@ -253,23 +267,6 @@ pub(crate) async fn update_constant_internal(
             // Mark tune as modified
             *state.tune_modified.lock().await = true;
         }
-    }
-
-    // Write to ECU if connected (optional - offline mode works without this)
-    if let Some(conn) = conn_guard.as_mut() {
-        let params = libretune_core::protocol::commands::WriteMemoryParams {
-            can_id: 0,
-            page: constant.page,
-            offset: constant.offset,
-            data: raw_data.clone(),
-        };
-
-        // Offline mode is the `conn_guard == None` case above. Once a
-        // connection exists, a failed write is a real failure: the cache and
-        // `current_tune` already hold the new value, so returning Ok here would
-        // leave the app showing a value the ECU never took.
-        conn.write_memory(params)
-            .map_err(|e| format!("Failed to write constant '{name}' to ECU: {e}"))?;
     }
 
     Ok(())

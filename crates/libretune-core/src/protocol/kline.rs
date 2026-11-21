@@ -64,6 +64,33 @@ const ENTRY_TRIES: usize = 3;
 const FIND_LINK: Duration = Duration::from_secs(10);
 /// KWP: one bit of the 5-baud address.
 const FIVE_BAUD_BIT: Duration = Duration::from_millis(200);
+/// The HaniCore TunerStudio plugin's ReplyWatch (2.3.0, what made OBD stable on
+/// the Porsche): the ECU answers within ~30 ms, so a request with no reply byte
+/// after this long never reached it and is sent again - twice at most.
+const RESEND: Duration = Duration::from_millis(300);
+const RESENDS: u8 = 2;
+/// KWP: idle before the 5-baud address (ISO W5, the plugin's idle(300)).
+const W5: Duration = Duration::from_millis(300);
+/// OBD: the line left alone before a re-entry. A 5-baud sent right after traffic
+/// failed nearly every time in the car (2026-11-05), after this much silence it
+/// worked.
+const QUIET: Duration = Duration::from_millis(2500);
+/// OBD: how long the DIRECT way in is tried before the 5-baud one. The plugin
+/// 2.3.0 that held OBD on the Porsche connected with AUTO = remembered path, then
+/// DIRECT (a TunerStudio request at the chosen rate, 8 tries), then 5-baud; its
+/// memory on the car laptop was DIRECT, so OBD ran without any KWP entry, while
+/// every session entered by 5-baud died (2026-11-05 review). The ECU answers a
+/// CRC-valid request at any time and follows the host's rate by itself.
+const DIRECT_FIRST: Duration = Duration::from_millis(3000);
+
+/// A read or a value write repeats safely; a Burn, a `!` action or a logger read
+/// does not (the plugin's list).
+fn resendable(cmd: u8) -> bool {
+    matches!(
+        cmd,
+        b'S' | b'Q' | b'V' | b'F' | b'C' | b'I' | b'f' | b'O' | b'A' | b'P' | b'R' | b'p' | b'W'
+    )
+}
 
 /// KWP GOFAST rate codes (HaniCore `B1 <code>`).
 fn rate_code(rate: u32) -> Option<u8> {
@@ -128,7 +155,7 @@ impl KWire for Box<dyn SerialPort> {
 }
 
 /// TunerStudio CRC envelope: big-endian length, payload, CRC-32.
-fn envelope(payload: &[u8]) -> Vec<u8> {
+pub(crate) fn envelope(payload: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(payload.len() + 6);
     v.extend_from_slice(&(payload.len() as u16).to_be_bytes());
     v.extend_from_slice(payload);
@@ -154,8 +181,17 @@ struct Inner<W: KWire> {
     echo: VecDeque<u8>,
     /// ECU bytes read from the wire, not yet handed to the caller.
     rxq: VecDeque<u8>,
-    /// Bytes matched against the current echo so far.
+    /// Bytes read against the current echo so far, and how many agreed.
     matched: Vec<u8>,
+    same: usize,
+    /// The request being assembled from the caller's writes.
+    frame: Vec<u8>,
+    /// A complete request with no reply byte yet, when it went out, re-sends so far.
+    armed: Option<Vec<u8>>,
+    t_armed: Instant,
+    resends: u8,
+    /// When the echo being waited for went out (a re-send is later than t_tx).
+    t_echo: Instant,
     /// Last write / last ECU byte (echo excluded).
     t_tx: Instant,
     t_rx: Instant,
@@ -273,12 +309,14 @@ impl<W: KWire> Inner<W> {
 
     /// One KWP entry; the negotiated rate on success.
     fn kwp_attempt(&mut self) -> Result<u32, String> {
+        let _ = self.wire.set_baud(10400);
+        std::thread::sleep(W5.min(self.five_baud_bit * 2));
         self.five_baud(0x01).map_err(|e| e.to_string())?;
         let sync = self.read_raw(3, Duration::from_millis(400));
         if sync != [0x55, 0xEF, 0x8F] {
             return Err(format!("no 5-baud sync ({:02X?})", sync));
         }
-        std::thread::sleep(Duration::from_millis(30)); // W4: 25..50 ms
+        std::thread::sleep(Duration::from_millis(25)); // W4: 25..50 ms, a Windows sleep runs long
         self.send_raw(&[0x70]);
         let fe = self.read_raw(1, Duration::from_millis(200));
         if fe != [0xFE] {
@@ -294,7 +332,9 @@ impl<W: KWire> Inner<W> {
             }
             d => return Err(format!("IDENTIFY: {:02X?}", d)),
         }
-        let mut rate = if rate_code(self.rate).is_some() && self.rate != 10400 {
+        // 10400 too (2026-11-06): the session then stays at the entry's own
+        // rate, as VCDS does on the AWT car
+        let mut rate = if rate_code(self.rate).is_some() {
             self.rate
         } else {
             124800
@@ -303,8 +343,9 @@ impl<W: KWire> Inner<W> {
             &[0xB1, rate_code(rate).unwrap()],
             Duration::from_millis(300),
         );
-        // a refused rate (7F B1 ..: the ECU cannot make it) - same session, the next one
-        for alt in [57600u32, 124800] {
+        // a refused rate (7F B1 ..: the ECU cannot make it) - same session, the
+        // next one: 124800 first, the nearest to the 115200 OBD ran at on the Porsche
+        for alt in [124800u32, 57600] {
             if alt == rate || !matches!(&d, Some(v) if v.starts_with(&[0x7F, 0xB1])) {
                 continue;
             }
@@ -348,9 +389,30 @@ impl<W: KWire> Inner<W> {
         false
     }
 
+    /// OBD, the fallback: the DIRECT way in, at the chosen rate and then at
+    /// every board's boot rate (57600). -> true when the ECU answered.
+    fn direct_first(&mut self) -> bool {
+        let asked = self.rate;
+        let limit = DIRECT_FIRST.min(self.five_baud_bit * 15);
+        for rate in [asked, 57600] {
+            if rate != asked && asked == 57600 {
+                break;
+            }
+            self.rate = rate;
+            if self.find_link(limit) {
+                tracing::info!("K-line: OBD path DIRECT at {} baud (no 5-baud sent)", rate);
+                return true;
+            }
+        }
+        self.rate = asked;
+        tracing::info!("K-line: OBD path: no direct answer either");
+        false
+    }
+
     /// (Re-)enter: find the ECU and leave the line clean.
     fn enter(&mut self) -> Result<(), String> {
-        let r = match self.mode {
+        let mode = self.mode;
+        let r = match mode {
             KLineMode::EchoOnly => Ok(()),
             KLineMode::Direct => {
                 let asked = self.rate;
@@ -373,7 +435,15 @@ impl<W: KWire> Inner<W> {
                     ))
                 }
             }
+            // DIRECT FIRST, THE PLUGIN'S ORDER (2026-11-06 night, again): plugin
+            // 2.3.0's AUTO tried DIRECT before the 5-baud entry and never sent a
+            // 5-baud once DIRECT had answered - and that held OBD on the AWT car.
+            // Every car session that died (Porsche 15.10, 018DC 04..06.11, all
+            // three tools) had been entered by 5-baud. 10400 has no direct path
+            // (no board hunts to it): the vehicle entry only.
+            KLineMode::Kwp if self.rate != 10400 && self.direct_first() => Ok(()),
             KLineMode::Kwp => {
+                let asked = self.rate;
                 let mut last = String::new();
                 let mut ok = None;
                 for i in 0..ENTRY_TRIES {
@@ -385,8 +455,8 @@ impl<W: KWire> Inner<W> {
                         Err(e) => {
                             tracing::warn!("K-line: KWP entry {} failed: {}", i + 1, e);
                             last = e;
-                            // the ECU falls back to KWP idle on silence
-                            std::thread::sleep(Duration::from_millis(2500));
+                            // leave the line alone before the next address
+                            std::thread::sleep(QUIET.min(self.five_baud_bit * 13));
                         }
                     }
                 }
@@ -396,21 +466,94 @@ impl<W: KWire> Inner<W> {
                         self.rate = rate;
                         Ok(())
                     }
-                    None => Err(format!(
-                        "no KWP entry ({}) - ignition on? cable in the OBD socket?",
-                        last
-                    )),
+                    None => {
+                        self.rate = asked;
+                        if asked == 10400 && self.direct_first() {
+                            Ok(())
+                        } else {
+                            Err(format!(
+                                "no KWP entry ({}), no direct answer - ignition on? cable in the OBD socket?",
+                                last
+                            ))
+                        }
+                    }
                 }
             }
         };
         let _ = self.wire.clear_input();
+        self.forget();
+        r
+    }
+
+    /// Nothing outstanding on the line any more.
+    fn forget(&mut self) {
         self.echo.clear();
         self.matched.clear();
+        self.same = 0;
         self.rxq.clear();
+        self.frame.clear();
+        self.armed = None;
         let now = Instant::now();
         self.t_tx = now;
         self.t_rx = now;
-        r
+        self.t_echo = now;
+    }
+
+    /// The caller wrote these bytes: a complete envelope that may be repeated is
+    /// armed (the plugin assembles it the same way - it can come in pieces).
+    fn wrote(&mut self, buf: &[u8]) {
+        self.armed = None;
+        self.frame.extend_from_slice(buf);
+        if self.frame.len() < 2 {
+            return;
+        }
+        let n = u16::from_be_bytes([self.frame[0], self.frame[1]]) as usize;
+        if n == 0 || self.frame.len() > n + 6 {
+            self.frame.clear();
+            return;
+        }
+        if self.frame.len() < n + 6 {
+            return;
+        }
+        let f = std::mem::take(&mut self.frame);
+        if resendable(f[2]) {
+            self.armed = Some(f);
+            self.t_armed = Instant::now();
+            self.resends = 0;
+        }
+    }
+
+    /// No reply byte for RESEND: the request never reached the ECU, send it again.
+    /// -> true while a request is still being repeated.
+    fn resend_if_due(&mut self) -> bool {
+        if self.armed.is_none() {
+            return false;
+        }
+        if let Ok(n) = self.wire.bytes_to_read() {
+            if n > 0 {
+                let got = self.read_raw(n as usize, Duration::from_millis(5));
+                self.take(&got);
+            }
+        }
+        if self.armed.is_none() || self.t_armed.elapsed() < RESEND {
+            return self.armed.is_some();
+        }
+        if self.resends >= RESENDS {
+            self.armed = None;
+            return false;
+        }
+        let req = self.armed.clone().unwrap_or_default();
+        self.echo.clear();
+        self.matched.clear();
+        self.same = 0;
+        self.echo.extend(req.iter().copied());
+        if self.wire.write(&req).is_ok() && self.wire.flush().is_ok() {
+            self.resends += 1;
+            self.t_armed = Instant::now();
+            self.t_echo = self.t_armed;
+            tracing::info!("K-line: no reply in 300 ms; request sent again ({})", self.resends);
+        }
+        true
     }
 
     /// Keep the negotiated rate: one `S` request, reply swallowed.
@@ -425,37 +568,83 @@ impl<W: KWire> Inner<W> {
     /// Sort bytes from the wire: our echo first, everything else is the ECU's.
     fn take(&mut self, data: &[u8]) {
         for &b in data {
-            if self.echo.front() == Some(&b) {
-                self.echo.pop_front();
+            if let Some(want) = self.echo.pop_front() {
                 self.matched.push(b);
+                if want == b {
+                    self.same += 1;
+                }
                 if self.echo.is_empty() {
-                    self.matched.clear();
+                    self.echo_done();
                 }
                 continue;
             }
-            if !self.echo.is_empty() {
-                // no echo after all: what looked like its start (every
-                // envelope begins with 0x00) was the ECU's
-                tracing::debug!("K-line: echo lost ({} byte(s))", self.echo.len());
-                self.echo.clear();
-                let back = std::mem::take(&mut self.matched);
-                self.rxq.extend(back);
-            }
+            self.armed = None; // a byte from the ECU: the request arrived
             self.rxq.push_back(b);
         }
     }
 
+    /// As many bytes as we sent are back. Mostly equal = our own request, a
+    /// difference means it was corrupted on the shared line, the ECU stays silent
+    /// and these are not a reply: dropped, the re-send repeats it (plugin 2.3.0).
+    /// Mostly different = an adapter without echo: this is the ECU's reply.
+    fn echo_done(&mut self) {
+        let got = std::mem::take(&mut self.matched);
+        if self.same * 2 < got.len() {
+            tracing::debug!("K-line: no echo on this cable ({} byte(s))", got.len());
+            self.armed = None;
+            self.rxq.extend(got);
+        } else if self.same < got.len() {
+            tracing::info!("K-line: request corrupted on the line, dropped");
+        }
+        self.same = 0;
+    }
+
     /// Give up an echo that never came back.
     fn echo_timeout(&mut self) {
-        if !self.echo.is_empty() && self.t_tx.elapsed() > ECHO_LOST {
+        if !self.echo.is_empty() && self.t_echo.elapsed() > ECHO_LOST {
             tracing::debug!("K-line: {} echo byte(s) never came back", self.echo.len());
             self.echo.clear();
+            if self.same * 2 < self.matched.len() {
+                // no echo: a reply shorter than the request
+                let got = std::mem::take(&mut self.matched);
+                self.armed = None;
+                self.rxq.extend(got);
+            }
             self.matched.clear();
+            self.same = 0;
         }
     }
 }
 
 /// A [`CommunicationChannel`] over a K-line (see the module docs).
+/// One KWP entry on a bare wire, for code that drives its own session on the
+/// port (the firmware updater); no echo filter, no supervision. Hands the wire
+/// back with the negotiated rate.
+pub(crate) fn kwp_entry_once<W: KWire>(wire: W, rate: u32) -> (W, Result<u32, String>) {
+    let now = Instant::now();
+    let mut inner = Inner {
+        wire,
+        mode: KLineMode::Kwp,
+        rate,
+        echo: VecDeque::new(),
+        rxq: VecDeque::new(),
+        matched: Vec::new(),
+        same: 0,
+        frame: Vec::new(),
+        armed: None,
+        t_armed: now,
+        resends: 0,
+        t_echo: now,
+        t_tx: now,
+        t_rx: now,
+        reply_limit: REPLY,
+        timeout: Duration::from_millis(5),
+        five_baud_bit: FIVE_BAUD_BIT,
+    };
+    let r = inner.kwp_attempt();
+    (inner.wire, r)
+}
+
 pub struct KLineChannel<W: KWire + 'static = Box<dyn SerialPort>> {
     inner: Arc<Mutex<Inner<W>>>,
 }
@@ -481,6 +670,12 @@ impl<W: KWire + 'static> KLineChannel<W> {
             echo: VecDeque::new(),
             rxq: VecDeque::new(),
             matched: Vec::new(),
+            same: 0,
+            frame: Vec::new(),
+            armed: None,
+            t_armed: now,
+            resends: 0,
+            t_echo: now,
             t_tx: now,
             t_rx: now,
             reply_limit: REPLY,
@@ -540,8 +735,29 @@ fn supervise<W: KWire>(weak: Weak<Mutex<Inner<W>>>) {
         let Some(arc) = weak.upgrade() else { return };
         let Ok(mut g) = arc.try_lock() else { continue };
         let waiting = g.t_tx > g.t_rx;
+        if waiting && g.resend_if_due() {
+            continue;
+        }
         if waiting && g.t_tx.elapsed() > g.reply_limit {
+            if g.mode == KLineMode::Kwp {
+                // OBD: the plugin went quiet after its two re-sends
+                // (TunerStudio waited 8 s); leave the line alone first
+                let quiet = QUIET.min(g.five_baud_bit * 13);
+                std::thread::sleep(quiet);
+            }
+            // HaniCore fork (2026-11-04, 018DC car: a re-entry every ~5 s
+            // over OBD). One lost reply on a shared line is not a lost ECU:
+            // ask once at the session rate - the line has been left alone since
+            // the last re-send - and enter again only if that is silent too.
+            if g.ts_request(b"S", Duration::from_millis(400)).is_some() {
+                tracing::warn!("K-line: a reply was lost; the ECU answers again at {} baud", g.rate);
+                let _ = g.wire.clear_input();
+                g.forget();
+                continue;
+            }
             tracing::warn!("K-line: the ECU stopped answering - entering again");
+            // OBD: enter() tries the direct way first and leaves the line
+            // QUIET before a 5-baud
             if let Err(e) = g.enter() {
                 tracing::warn!("K-line: {}", e);
             }
@@ -598,6 +814,8 @@ impl<W: KWire + 'static> Write for KLineChannel<W> {
         let keep = g.echo.len() - (buf.len() - n);
         g.echo.truncate(keep);
         if n > 0 {
+            g.t_echo = Instant::now();
+            g.wrote(&buf[..n]);
             // an envelope starts with its 16-bit length, then the command
             if buf.len() >= 3 && buf[0] == 0 {
                 g.reply_limit = if matches!(buf[2], b'B' | b'!') {
@@ -618,6 +836,10 @@ impl<W: KWire + 'static> Write for KLineChannel<W> {
 }
 
 impl<W: KWire + 'static> CommunicationChannel for KLineChannel<W> {
+    fn link_rate(&self) -> Option<u32> {
+        Some(self.rate())
+    }
+
     fn set_timeout(&mut self, timeout: Duration) -> io::Result<()> {
         let mut g = self.acquire(Duration::from_secs(30))?;
         g.timeout = timeout;
@@ -634,6 +856,7 @@ impl<W: KWire + 'static> CommunicationChannel for KLineChannel<W> {
             g.echo.clear();
         }
         g.matched.clear();
+        g.same = 0;
         g.rxq.clear();
         g.wire.clear_input()
     }
@@ -685,6 +908,18 @@ mod tests {
         echo: bool,
         pending: Vec<u8>,
         s_requests: Arc<Mutex<usize>>,
+        /// non-'S' replies still to swallow (a reply lost on the line)
+        drop: Arc<Mutex<usize>>,
+        /// set_break calls: a 5-baud re-entry shows here
+        break_calls: Arc<Mutex<usize>>,
+        /// the car's line: closed, (last host activity, silence that opens it),
+        /// and the requests sent while it was closed
+        cut: Arc<Mutex<Option<(Instant, Duration)>>>,
+        closed_writes: Arc<Mutex<usize>>,
+        /// answers no envelope before a KWP entry (a line that only a 5-baud opens)
+        needs_entry: bool,
+        /// answers no 5-baud address (only the direct way in works)
+        no_entry: bool,
     }
 
     impl FakeEcu {
@@ -699,7 +934,19 @@ mod tests {
                 echo: true,
                 pending: Vec::new(),
                 s_requests: Arc::new(Mutex::new(0)),
+                drop: Arc::new(Mutex::new(0)),
+                break_calls: Arc::new(Mutex::new(0)),
+                cut: Arc::new(Mutex::new(None)),
+                closed_writes: Arc::new(Mutex::new(0)),
+                needs_entry: false,
+                no_entry: false,
             }
+        }
+
+        fn kwp_only(ecu_baud: u32) -> Self {
+            let mut f = Self::new(ecu_baud);
+            f.needs_entry = true;
+            f
         }
 
         fn answer_envelope(&mut self) {
@@ -711,8 +958,15 @@ mod tests {
                 return;
             }
             let frame: Vec<u8> = self.pending.drain(..n + 6).collect();
-            if self.baud != self.ecu_baud {
+            if self.baud != self.ecu_baud || (self.needs_entry && self.kwp_stage != 3) {
                 return; // garbage at the wrong rate: the ECU says nothing
+            }
+            if frame[2] != b'S' {
+                let mut d = self.drop.lock().unwrap();
+                if *d > 0 {
+                    *d -= 1;
+                    return; // the reply was lost on the line
+                }
             }
             let reply: &[u8] = match frame[2] {
                 b'S' => {
@@ -744,6 +998,7 @@ mod tests {
                         0xB0 => [&[0xF0][..], b"HaniCore TEST"].concat(),
                         0xB1 => {
                             let rate = match data[1] {
+                                0x01 => 10400,
                                 0x02 => 57600,
                                 0x03 => 124800,
                                 _ => 115200,
@@ -768,6 +1023,24 @@ mod tests {
         }
     }
 
+    impl FakeEcu {
+        /// Closed until the host has been silent long enough; talking restarts it.
+        fn line_closed(&mut self) -> bool {
+            let mut c = self.cut.lock().unwrap();
+            match *c {
+                Some((t, q)) if t.elapsed() < q => {
+                    *c = Some((Instant::now(), q));
+                    true
+                }
+                Some(_) => {
+                    *c = None;
+                    false
+                }
+                None => false,
+            }
+        }
+    }
+
     impl KWire for FakeEcu {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             let n = buf.len().min(self.rx.len());
@@ -782,6 +1055,10 @@ mod tests {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             if self.echo {
                 self.rx.extend(buf.iter().copied());
+            }
+            if self.line_closed() {
+                *self.closed_writes.lock().unwrap() += 1;
+                return Ok(buf.len());
             }
             for &b in buf {
                 if self.kwp_stage == 1 || self.kwp_stage == 2 {
@@ -804,12 +1081,17 @@ mod tests {
             Ok(())
         }
         fn set_break(&mut self, on: bool) -> io::Result<()> {
+            if self.line_closed() {
+                return Ok(());
+            }
+            *self.break_calls.lock().unwrap() += 1;
             self.breaks.push(on);
             // the address byte 0x01 is complete: start bit, 8 data, stop
             let want = [
                 true, false, true, true, true, true, true, true, true, false, false,
             ];
-            if self.breaks.len() == want.len() && self.breaks == want {
+            if self.breaks.ends_with(&want) && !self.no_entry {
+                self.breaks.clear();
                 self.kwp_stage = 1;
                 self.ecu_baud = 10400;
             }
@@ -900,6 +1182,12 @@ mod tests {
             echo: VecDeque::new(),
             rxq: VecDeque::new(),
             matched: Vec::new(),
+            same: 0,
+            frame: Vec::new(),
+            armed: None,
+            t_armed: Instant::now(),
+            resends: 0,
+            t_echo: Instant::now(),
             t_tx: Instant::now(),
             t_rx: Instant::now(),
             reply_limit: REPLY,
@@ -913,7 +1201,7 @@ mod tests {
     #[test]
     fn kwp_entry_negotiates_and_answers() {
         let mut ch = KLineChannel::open_with_bit(
-            FakeEcu::new(57600),
+            FakeEcu::kwp_only(57600),
             KLineMode::Kwp,
             124800,
             Duration::from_millis(1),
@@ -924,12 +1212,25 @@ mod tests {
     }
 
     #[test]
+    fn kwp_entry_can_stay_at_10400() {
+        let mut ch = KLineChannel::open_with_bit(
+            FakeEcu::kwp_only(57600),
+            KLineMode::Kwp,
+            10400,
+            Duration::from_millis(1),
+        )
+        .unwrap();
+        assert_eq!(ch.rate(), 10400);
+        assert_eq!(roundtrip(&mut ch, b"V"), envelope(b"\x00HaniCore TEST"));
+    }
+
+    #[test]
     fn kwp_falls_back_when_the_rate_is_refused() {
-        let mut w = FakeEcu::new(57600);
+        let mut w = FakeEcu::kwp_only(57600);
         w.refuse = vec![115200];
         let ch = KLineChannel::open_with_bit(w, KLineMode::Kwp, 115200, Duration::from_millis(1))
             .unwrap();
-        assert_eq!(ch.rate(), 57600);
+        assert_eq!(ch.rate(), 124800);
     }
 
     #[test]
@@ -943,6 +1244,183 @@ mod tests {
             *count.lock().unwrap() > after_entry,
             "no keepalive was sent"
         );
+    }
+
+    #[test]
+    fn a_lost_reply_costs_no_reentry() {
+        // HaniCore fork, 2026-11-04 (018DC car: a re-entry every ~5 s over
+        // OBD): one reply lost on the line is answered by a probe at the
+        // session rate, not by a 5-baud entry
+        let w = FakeEcu::new(57600);
+        let drop = Arc::clone(&w.drop);
+        let breaks = Arc::clone(&w.break_calls);
+        let mut ch =
+            KLineChannel::open_with_bit(w, KLineMode::Kwp, 57600, Duration::from_millis(1))
+                .unwrap();
+        let after_entry = *breaks.lock().unwrap();
+        *drop.lock().unwrap() = 1;
+        ch.write_all(&envelope(b"V")).unwrap();
+        std::thread::sleep(REPLY + Duration::from_millis(1500));
+        assert_eq!(*breaks.lock().unwrap(), after_entry, "a 5-baud re-entry ran");
+        assert_eq!(roundtrip(&mut ch, b"V"), envelope(b" HaniCore TEST"));
+    }
+
+    #[test]
+    fn a_lost_request_is_sent_again_within_a_second() {
+        // the plugin's ReplyWatch: no reply byte in 300 ms -> the same request
+        // again; the reply arrives with no probe and no re-entry
+        let w = FakeEcu::new(57600);
+        let drop = Arc::clone(&w.drop);
+        let breaks = Arc::clone(&w.break_calls);
+        let s = Arc::clone(&w.s_requests);
+        let mut ch =
+            KLineChannel::open_with_bit(w, KLineMode::Kwp, 57600, Duration::from_millis(1))
+                .unwrap();
+        let after_entry = *breaks.lock().unwrap();
+        let s0 = *s.lock().unwrap();
+        *drop.lock().unwrap() = 1;
+        ch.write_all(&envelope(b"V")).unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(*drop.lock().unwrap(), 0, "the request was not sent again");
+        let want = envelope(b"\x00HaniCore TEST");
+        let mut got = vec![0u8; want.len()];
+        ch.set_timeout(Duration::from_millis(500)).unwrap();
+        ch.read_exact(&mut got).unwrap();
+        assert_eq!(got, want);
+        assert_eq!(*breaks.lock().unwrap(), after_entry, "a 5-baud re-entry ran");
+        assert_eq!(*s.lock().unwrap(), s0, "a probe ran");
+    }
+
+    #[test]
+    fn a_cut_line_is_left_alone_and_comes_back() {
+        // 2026-11-05 car: the line closes in a session, stays closed while the
+        // host talks, opens after silence. 2 s of silence needed: the probe at
+        // 2.5 s (1.9 s after the last re-send) is still too early, so the entry
+        // must wait - exactly one entry, no hammering, the session back.
+        let w = FakeEcu::kwp_only(57600);
+        let breaks = Arc::clone(&w.break_calls);
+        let cut = Arc::clone(&w.cut);
+        let closed = Arc::clone(&w.closed_writes);
+        let mut ch = KLineChannel::open(w, KLineMode::Kwp, 57600).unwrap();
+        let before = *breaks.lock().unwrap();
+        *cut.lock().unwrap() = Some((Instant::now(), Duration::from_secs(2)));
+        ch.write_all(&envelope(b"V")).unwrap();
+        // reply limit 2.5 s, then the plugin's quiet (2.5 s), then the probe
+        std::thread::sleep(Duration::from_millis(8000));
+        assert!(cut.lock().unwrap().is_none(), "the line never got its silence");
+        assert!(*closed.lock().unwrap() <= 5, "hammered: {}", closed.lock().unwrap());
+        assert_eq!(
+            *breaks.lock().unwrap() - before,
+            0,
+            "after the silence the direct way back needs no 5-baud entry"
+        );
+        assert_eq!(roundtrip(&mut ch, b"V"), envelope(b"\x00HaniCore TEST"));
+    }
+
+    #[test]
+    fn a_short_cut_needs_no_entry_at_all() {
+        // silence of 0.25 s is enough: the first re-send at 300 ms gets through
+        let w = FakeEcu::new(57600);
+        let breaks = Arc::clone(&w.break_calls);
+        let cut = Arc::clone(&w.cut);
+        let mut ch =
+            KLineChannel::open_with_bit(w, KLineMode::Kwp, 57600, Duration::from_millis(1))
+                .unwrap();
+        let before = *breaks.lock().unwrap();
+        *cut.lock().unwrap() = Some((Instant::now(), Duration::from_millis(250)));
+        ch.write_all(&envelope(b"V")).unwrap();
+        std::thread::sleep(Duration::from_millis(700));
+        let want = envelope(b"\x00HaniCore TEST");
+        let mut got = vec![0u8; want.len()];
+        ch.read_exact(&mut got).unwrap();
+        assert_eq!(got, want);
+        assert_eq!(*breaks.lock().unwrap(), before, "a 5-baud re-entry ran");
+    }
+
+    #[test]
+    fn the_echo_of_a_resend_is_not_a_reply() {
+        // 2026-11-05 car: "OCH response: 5 bytes", "8 of 1363 bytes" - the echo of
+        // the re-sent request went up as the ECU's reply
+        let w = FakeEcu::new(57600);
+        let drop = Arc::clone(&w.drop);
+        let mut ch =
+            KLineChannel::open_with_bit(w, KLineMode::Kwp, 57600, Duration::from_millis(1))
+                .unwrap();
+        *drop.lock().unwrap() = 2; // lost, and the first re-send lost too
+        ch.write_all(&envelope(b"V")).unwrap();
+        std::thread::sleep(Duration::from_millis(900));
+        let want = envelope(b"\x00HaniCore TEST");
+        let mut got = vec![0u8; want.len()];
+        ch.read_exact(&mut got).unwrap();
+        assert_eq!(got, want, "the caller read something else than the reply");
+    }
+
+    #[test]
+    fn obd_enters_direct_first() {
+        // an ECU that would answer both ways: DIRECT, and no 5-baud at all
+        // (plugin 2.3.0 AUTO order; every car session that died had a 5-baud)
+        let w = FakeEcu::new(57600);
+        let breaks = Arc::clone(&w.break_calls);
+        let s = Arc::clone(&w.s_requests);
+        let mut ch =
+            KLineChannel::open_with_bit(w, KLineMode::Kwp, 57600, Duration::from_millis(1))
+                .unwrap();
+        assert_eq!(*breaks.lock().unwrap(), 0, "a 5-baud was sent although DIRECT answers");
+        assert!(*s.lock().unwrap() >= 1, "no direct probe");
+        assert_eq!(ch.rate(), 57600);
+        assert_eq!(roundtrip(&mut ch, b"V"), envelope(b" HaniCore TEST"));
+    }
+
+    #[test]
+    fn obd_direct_falls_to_the_boot_rate() {
+        // a 24 MHz board has no 115200: DIRECT at the boot rate, no 5-baud
+        let mut w = FakeEcu::new(57600);
+        w.no_entry = true;
+        let breaks = Arc::clone(&w.break_calls);
+        let mut ch =
+            KLineChannel::open_with_bit(w, KLineMode::Kwp, 115200, Duration::from_millis(1))
+                .unwrap();
+        assert_eq!(*breaks.lock().unwrap(), 0, "a 5-baud was sent");
+        assert_eq!(ch.rate(), 57600);
+        assert_eq!(roundtrip(&mut ch, b"V"), envelope(b" HaniCore TEST"));
+    }
+
+    #[test]
+    fn obd_10400_goes_by_5_baud() {
+        // 10400 = stay at the entry rate (what VCDS does): the 5-baud entry
+        let w = FakeEcu::new(57600);
+        let breaks = Arc::clone(&w.break_calls);
+        let ch =
+            KLineChannel::open_with_bit(w, KLineMode::Kwp, 10400, Duration::from_millis(1))
+                .unwrap();
+        assert_eq!(*breaks.lock().unwrap(), 11, "not exactly one 5-baud entry");
+        assert_eq!(ch.rate(), 10400);
+    }
+
+    #[test]
+    fn obd_kwp_only_line() {
+        // a line that only a 5-baud opens
+        let w = FakeEcu::kwp_only(57600);
+        let breaks = Arc::clone(&w.break_calls);
+        let mut ch =
+            KLineChannel::open_with_bit(w, KLineMode::Kwp, 124800, Duration::from_millis(1))
+                .unwrap();
+        assert_eq!(*breaks.lock().unwrap(), 11, "not exactly one 5-baud entry");
+        assert_eq!(ch.rate(), 124800);
+        assert_eq!(roundtrip(&mut ch, b"V"), envelope(b" HaniCore TEST"));
+    }
+
+    #[test]
+    fn a_burn_is_never_sent_again() {
+        let w = FakeEcu::new(57600);
+        let drop = Arc::clone(&w.drop);
+        let mut ch =
+            KLineChannel::open_with_bit(w, KLineMode::Kwp, 57600, Duration::from_millis(1))
+                .unwrap();
+        *drop.lock().unwrap() = 2;
+        ch.write_all(&envelope(b"B")).unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+        assert_eq!(*drop.lock().unwrap(), 1, "a Burn was repeated");
     }
 
     #[test]

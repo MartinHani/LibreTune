@@ -481,7 +481,19 @@ pub struct Connection {
 /// HaniCore fork: with a focus set, the block is read in this many slices, one per poll.
 const OCH_FULL_EVERY: u32 = 8;
 
+/// HaniCore fork: bytes in a 25 ms reply at `rate` (10 bits a byte), a
+/// multiple of 16 between 16 and 256 - 144 at 57600, 256 at 124800.
+fn obd_read_cap_at(rate: u32) -> usize {
+    ((rate as usize) * 25 / 10_000 / 16 * 16).clamp(16, 256)
+}
+
 impl Connection {
+    /// The configuration this connection was opened with (HaniCore fork: the
+    /// K-line firmware update reuses its port and entry mode).
+    pub fn config(&self) -> &ConnectionConfig {
+        &self.config
+    }
+
     /// Create a new connection (not yet connected)
     pub fn new(config: ConnectionConfig) -> Self {
         Self {
@@ -1622,6 +1634,15 @@ impl Connection {
             .as_ref()
             .map(|p| p.och_block_size as usize)
             .unwrap_or(0);
+        if let Some(cap) = self.obd_read_cap() {
+            if self.use_modern_protocol && block > 0 {
+                if let (RuntimeFetch::OCH(fmt), _) = self.choose_runtime_command() {
+                    if fmt.contains("%2o") {
+                        return self.och_short_reads(&fmt, block, cap);
+                    }
+                }
+            }
+        }
         if !self.och_focus.is_empty()
             && !self.och_focus_paused
             && self.use_modern_protocol
@@ -1658,6 +1679,59 @@ impl Connection {
             self.och_cache = whole.clone();
         }
         Ok(whole)
+    }
+
+    /// HaniCore fork: the longest reply a read may ask for through the car's
+    /// OBD socket - about 25 ms on the wire, TunerStudio's own longest (256 B
+    /// at 115200; its OCH windows are 2..256 B, car logs 11..14.10). On the
+    /// 018DC car (A4 B5, 2026-11-05) the line through the instrument cluster
+    /// was cut 3.0 s after every 1714-byte reply at 10400 (0.75 s at 57600)
+    /// and stayed cut until a new 5-baud entry; shorter replies ran for
+    /// seconds without one. None on any other link.
+    fn obd_read_cap(&self) -> Option<usize> {
+        if self.config.connection_type != ConnectionType::KLineKwp {
+            return None;
+        }
+        let rate = self.channel.as_ref().and_then(|c| c.link_rate());
+        Some(obd_read_cap_at(rate.unwrap_or(self.config.baud_rate)))
+    }
+
+    /// The runtime data as short reads (`obd_read_cap`): the focused ranges
+    /// plus one slice of the block per poll - the whole block, slice by slice,
+    /// while nothing is focused, a data log records, or nothing is cached yet.
+    fn och_short_reads(
+        &mut self,
+        fmt: &str,
+        block: usize,
+        cap: usize,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        if self.och_cache.len() != block || self.och_focus.is_empty() || self.och_focus_paused {
+            self.och_cache.resize(block, 0);
+            ranges.push((0, block));
+        } else {
+            let tick = self.och_focus_tick;
+            self.och_focus_tick = self.och_focus_tick.wrapping_add(1);
+            let slice = block.div_ceil(OCH_FULL_EVERY as usize);
+            let s_off = (tick % OCH_FULL_EVERY) as usize * slice;
+            ranges.extend(self.och_focus.iter().map(|&(o, c)| (o as usize, c as usize)));
+            if s_off < block {
+                ranges.push((s_off, slice.min(block - s_off)));
+            }
+        }
+        for (off, cnt) in ranges {
+            let end = (off + cnt).min(block);
+            let mut o = off;
+            while o < end {
+                let n = (end - o).min(cap);
+                let cmd = self.command_builder.build_och_range(fmt, o as u16, n as u16)?;
+                let response = self.send_packet(Packet::new(cmd))?;
+                let part = strip_status_byte(&response.payload, n, "OCH")?;
+                self.och_cache[o..o + part.len()].copy_from_slice(&part);
+                o += n;
+            }
+        }
+        Ok(self.och_cache.clone())
     }
 
     /// Read the whole runtime block (upstream's get_realtime_data).
@@ -1924,6 +1998,10 @@ impl Connection {
             .as_ref()
             .map(|p| p.blocking_factor)
             .unwrap_or(256);
+        let blocking_factor = match self.obd_read_cap() {
+            Some(cap) => blocking_factor.min(cap as u32).max(1),
+            None => blocking_factor,
+        };
 
         let mut data = Vec::with_capacity(page_size as usize);
         let mut offset = 0u16;
@@ -4548,5 +4626,163 @@ mod page_crc_tests {
             msg.contains("crc32CheckCommand") && msg.contains('3'),
             "error should name the missing command and the page: {msg}"
         );
+    }
+}
+
+/// HaniCore fork: through the car's OBD socket no read asks for a reply
+/// longer than ~25 ms on the wire (TunerStudio's own longest). The 018DC car
+/// lost the line 3 s after every long reply (2026-11-05 logs).
+#[cfg(test)]
+mod obd_read_cap_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    /// A HaniCore ECU behind CRC envelopes: `O off cnt` and `R page off cnt`
+    /// answer `cnt` bytes; the longest count asked is recorded.
+    #[derive(Default)]
+    struct Core {
+        inb: Vec<u8>,
+        out: VecDeque<u8>,
+        longest: usize,
+        reads: usize,
+    }
+
+    impl Core {
+        fn feed(&mut self, buf: &[u8]) {
+            self.inb.extend_from_slice(buf);
+            while self.inb.len() >= 2 {
+                let n = u16::from_be_bytes([self.inb[0], self.inb[1]]) as usize;
+                if self.inb.len() < n + 6 {
+                    return;
+                }
+                let p: Vec<u8> = self.inb[2..2 + n].to_vec();
+                self.inb.drain(..n + 6);
+                let cnt = match p.first() {
+                    Some(b'O') if p.len() >= 5 => u16::from_be_bytes([p[3], p[4]]) as usize,
+                    Some(b'R') if p.len() >= 7 => u16::from_be_bytes([p[5], p[6]]) as usize,
+                    _ => 0,
+                };
+                self.longest = self.longest.max(cnt);
+                self.reads += 1;
+                let mut body = vec![0u8];
+                body.extend(std::iter::repeat(0x5Au8).take(cnt));
+                let mut h = crc32fast::Hasher::new();
+                h.update(&body);
+                self.out.extend((body.len() as u16).to_be_bytes());
+                self.out.extend(body);
+                self.out.extend(h.finalize().to_be_bytes());
+            }
+        }
+    }
+
+    struct Chan(Arc<Mutex<Core>>, Option<u32>);
+
+    impl Write for Chan {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().feed(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Read for Chan {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let mut c = self.0.lock().unwrap();
+            let n = c.out.len().min(buf.len());
+            for slot in buf.iter_mut().take(n) {
+                *slot = c.out.pop_front().unwrap();
+            }
+            Ok(n)
+        }
+    }
+
+    impl CommunicationChannel for Chan {
+        fn set_timeout(&mut self, _timeout: Duration) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn clear_input_buffer(&mut self) -> std::io::Result<()> {
+            self.0.lock().unwrap().out.clear();
+            Ok(())
+        }
+        fn clear_output_buffer(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn try_clone(&self) -> std::io::Result<Box<dyn CommunicationChannel>> {
+            Ok(Box::new(Chan(Arc::clone(&self.0), self.1)))
+        }
+        fn bytes_to_read(&mut self) -> std::io::Result<u32> {
+            Ok(self.0.lock().unwrap().out.len() as u32)
+        }
+        fn link_rate(&self) -> Option<u32> {
+            self.1
+        }
+    }
+
+    fn conn(kind: ConnectionType, core: &Arc<Mutex<Core>>) -> Connection {
+        let mut c = Connection::new(ConnectionConfig {
+            connection_type: kind,
+            baud_rate: 57600,
+            runtime_packet_mode: RuntimePacketMode::ForceOCH,
+            ..ConnectionConfig::default()
+        });
+        let mut proto = ProtocolSettings::default();
+        proto.och_block_size = 1696;
+        proto.och_get_command = Some("O%2o%2c".to_string());
+        proto.page_sizes = vec![4480];
+        proto.page_read_commands = vec!["R%2i%2o%2c".to_string()];
+        proto.inter_write_delay = 0;
+        c.set_protocol(proto, Endianness::Big);
+        c.use_modern_protocol = true;
+        c.config.auto_burn_on_page_change = false;
+        c.channel = Some(Box::new(Chan(Arc::clone(core), None)));
+        c
+    }
+
+    /// A KWP session that ended at 10400 although 57600 was asked: the cap
+    /// follows the line, not the dialog (16 B, not 144).
+    #[test]
+    fn the_cap_follows_the_negotiated_rate() {
+        let core = Arc::new(Mutex::new(Core::default()));
+        let mut c = conn(ConnectionType::KLineKwp, &core);
+        c.channel = Some(Box::new(Chan(Arc::clone(&core), Some(10400))));
+        assert_eq!(c.get_realtime_data().expect("whole block").len(), 1696);
+        assert_eq!(core.lock().unwrap().longest, 16);
+    }
+
+    #[test]
+    fn the_cap_is_25_ms_on_the_wire() {
+        assert_eq!(obd_read_cap_at(57600), 144);
+        assert_eq!(obd_read_cap_at(124800), 256);
+        assert_eq!(obd_read_cap_at(10400), 16);
+    }
+
+    #[test]
+    fn obd_socket_reads_are_short() {
+        let core = Arc::new(Mutex::new(Core::default()));
+        let mut c = conn(ConnectionType::KLineKwp, &core);
+        let whole = c.get_realtime_data().expect("whole block");
+        assert_eq!(whole.len(), 1696);
+        c.set_och_focus(vec![(0, 900), (1000, 40)]);
+        for _ in 0..10 {
+            assert_eq!(c.get_realtime_data().expect("focused").len(), 1696);
+        }
+        let page = c.read_page(0).expect("page");
+        assert_eq!(page.len(), 4480);
+        let k = core.lock().unwrap();
+        assert!(k.longest <= 144, "a {} B reply asked for on the OBD socket", k.longest);
+        assert!(k.reads > 12 + 10 * 7 + 4480 / 144);
+    }
+
+    /// Control: the cable on the ECU pin keeps whole-block reads.
+    #[test]
+    fn ecu_pin_reads_stay_whole() {
+        let core = Arc::new(Mutex::new(Core::default()));
+        let mut c = conn(ConnectionType::KLine, &core);
+        assert_eq!(c.get_realtime_data().expect("whole block").len(), 1696);
+        assert_eq!(core.lock().unwrap().longest, 1696);
     }
 }

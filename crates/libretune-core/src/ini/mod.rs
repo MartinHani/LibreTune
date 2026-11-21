@@ -792,6 +792,7 @@ impl EcuDefinition {
                 .keys()
                 .find(|k| k.eq_ignore_ascii_case("cmd_openblt"))
                 .cloned(),
+            hanicore_update: self.signature.starts_with("HaniCore "),
             lua_script_constant: self
                 .constants
                 .iter()

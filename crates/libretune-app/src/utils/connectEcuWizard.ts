@@ -37,7 +37,7 @@ export function isSerialTransport(transport: WizardTransport | null): boolean {
 export const WIZARD_BAUD_RATES = [9600, 38400, 57600, 115200, 230400, 460800, 921600];
 
 /** Rates a K-line ECU can be asked for (direct, or negotiated through KWP). */
-export const WIZARD_KLINE_BAUD_RATES = [57600, 115200, 124800];
+export const WIZARD_KLINE_BAUD_RATES = [57600, 115200, 124800, 10400];
 
 /**
  * The backend connection type for a transport. A K-line cable is either on

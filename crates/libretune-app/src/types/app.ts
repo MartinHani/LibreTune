@@ -71,6 +71,8 @@ export interface IniCapabilities {
   dfu_command_name?: string | null;
   openblt_command_name?: string | null;
   lua_script_constant?: string | null;
+  /** HaniCore fork: firmware update over the K-line (hc_update) */
+  hanicore_update?: boolean;
 }
 
 export interface ProjectInfo {

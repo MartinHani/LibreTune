@@ -192,9 +192,31 @@ pub fn run() {
     // Default to INFO when RUST_LOG is not set; dev builds previously spammed
     // stderr with protocol debug eprintln! calls.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| {
+            // the K-line's own detail (lost echoes/replies, re-entries)
+            // is what a car session's log is read for
+            tracing_subscriber::EnvFilter::new("info,libretune_core::protocol::kline=debug")
+        });
+    // HaniCore fork (2026-11-04): a release exe has no console, so a car
+    // session left no trace of why the K-line re-entered. The log also goes
+    // to %LOCALAPPDATA%\com.hanicore.libretune\libretune.log (the previous
+    // run kept as libretune.old.log) - the file a tester sends back.
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
+    let log_file = std::env::var_os("LOCALAPPDATA")
+        .map(|d| std::path::PathBuf::from(d).join("com.hanicore.libretune"))
+        .and_then(|dir| {
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join("libretune.log");
+            let _ = std::fs::rename(&path, dir.join("libretune.old.log"));
+            std::fs::File::create(path).ok()
+        });
+    let file_writer = std::sync::Mutex::new(match log_file {
+        Some(f) => Box::new(f) as Box<dyn std::io::Write + Send>,
+        None => Box::new(std::io::sink()),
+    });
     tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_ansi(false)
         // `fmt()` writes to STDOUT by default. Everything that captures this
         // app's diagnostics redirects stderr, so without this line every
         // `tracing::` event went to a stream nobody was reading - while the
@@ -202,7 +224,7 @@ pub fn run() {
         // making the log look healthy. A car session's entire AutoTune trail
         // was lost that way, including the line naming which AFR target table
         // had been resolved.
-        .with_writer(std::io::stderr)
+        .with_writer(std::io::stderr.and(file_writer))
         // Keep the module path: with `RUST_LOG` filtering by target, a line
         // that does not say where it came from cannot be traced back to the
         // directive that did or did not select it.

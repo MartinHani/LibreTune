@@ -11,6 +11,7 @@ pub mod commands;
 mod connection;
 pub mod discovery;
 mod error;
+pub mod hc_update;
 pub mod kline;
 mod packet;
 mod response_code;

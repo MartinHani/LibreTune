@@ -1,3 +1,4 @@
+// Modified 2026-11-06 in the HaniCore K-line fork of LibreTune (see FORK.md).
 use serialport::SerialPort;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -19,6 +20,12 @@ pub trait CommunicationChannel: Read + Write + Send {
 
     /// Get number of bytes available to read
     fn bytes_to_read(&mut self) -> io::Result<u32>;
+
+    /// HaniCore fork: the line rate in use, when the channel negotiated one
+    /// (a K-line KWP entry may end at another rate than the port was opened at).
+    fn link_rate(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Serial port wrapper implementing CommunicationChannel

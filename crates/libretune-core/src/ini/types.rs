@@ -129,6 +129,10 @@ pub struct IniCapabilities {
     pub openblt_command_name: Option<String>,
     /// Name of the ECU Lua script string constant (typically `luaScript`).
     pub lua_script_constant: Option<String>,
+    /// HaniCore fork: the INI is a HaniCore ECU's (signature `HaniCore ...`),
+    /// which updates its firmware over the K-line (`hc_update`).
+    #[serde(default)]
+    pub hanicore_update: bool,
 }
 
 /// Data types supported by ECU constants

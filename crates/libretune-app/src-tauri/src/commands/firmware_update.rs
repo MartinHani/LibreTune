@@ -53,9 +53,22 @@ fn path_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// HaniCore fork: a GUI app gets a visible console window for every console
+/// program it starts unless told otherwise (opening this dialog alone starts
+/// reg.exe and where.exe several times). Every child here starts through this.
+fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 #[cfg(windows)]
 fn windows_user_path_from_registry() -> Option<std::ffi::OsString> {
-    let output = Command::new("reg")
+    let output = hidden_command("reg")
         .args(["query", r"HKCU\Environment", "/v", "Path"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -101,7 +114,7 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn find_via_where(name: &str) -> Option<PathBuf> {
-    let output = Command::new("where.exe")
+    let output = hidden_command("where.exe")
         .arg(name)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -572,7 +585,7 @@ where
 }
 
 fn run_command_capture(tool: &Path, args: &[&str]) -> Result<(bool, String), String> {
-    let output = Command::new(tool)
+    let output = hidden_command(tool)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -753,7 +766,7 @@ fn flash_with_bootcommander(
 fn kill_stale_bootcommander_processes() {
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
+        let _ = hidden_command("taskkill")
             .args(["/IM", "BootCommander.exe", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -975,6 +988,95 @@ fn validate_firmware_file(path: &Path, method: &str) -> Result<(), String> {
     Ok(())
 }
 
+async fn update_hanicore(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: PathBuf,
+) -> Result<FirmwareUpdateResult, String> {
+    use libretune_core::protocol::ConnectionType;
+    if firmware_extension(&path) != "bin" {
+        return Err("A HaniCore update is the release .bin (HaniCore_<board>_<part>_<build>.bin)".into());
+    }
+    if !path.is_file() {
+        return Err(format!("Firmware file not found: {}", path.display()));
+    }
+    let (port, kwp) = {
+        let guard = state.connection.lock().await;
+        let conn = guard.as_ref().ok_or("Connect to the ECU first (the update uses the same cable and port)")?;
+        let cfg = conn.config();
+        match cfg.connection_type {
+            ConnectionType::KLine => (cfg.port_name.clone(), false),
+            ConnectionType::KLineKwp => (cfg.port_name.clone(), true),
+            _ => return Err("A HaniCore update runs over the K-line: connect with the K-line (KKL) connection".into()),
+        }
+    };
+    let (old_ini, out_dir) = {
+        let guard = state.current_project.lock().await;
+        let project = guard.as_ref().ok_or("No project loaded")?;
+        let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+        (project.ini_path(), project.path.join("firmware_updates").join(stamp))
+    };
+    let prefer = current_ini_prefer_prefix(&state).await;
+    let new_ini = find_bundled_ini(&path, prefer.as_deref()).ok_or(
+        "The .ini that came with the image is not next to the .bin - keep both files of the release together",
+    )?;
+
+    let mut log = Vec::new();
+    push_log(&app, &mut log, format!("HaniCore K-line update of {} on {}", path.display(), port));
+    push_log(&app, &mut log, "Engine off, ignition on, battery connected - do not switch off until it says UPDATE COMPLETE.");
+
+    stop_metrics_task(state.clone()).await;
+    {
+        let mut task_guard = state.streaming_task.lock().await;
+        if let Some(handle) = task_guard.take() {
+            handle.abort();
+        }
+    }
+    {
+        let _transition = state.connection_transition.lock().await;
+        let mut conn_guard = state.connection.lock().await;
+        *conn_guard = None;
+    }
+    push_log(&app, &mut log, format!("Disconnected - {} is the updater's now.", port));
+    sleep(Duration::from_millis(800)).await;
+
+    let request = libretune_core::protocol::hc_update::UpdateRequest {
+        image: path.clone(),
+        port: port.clone(),
+        kwp,
+        old_ini: old_ini.clone(),
+        new_ini: new_ini.clone(),
+        out_dir: out_dir.clone(),
+    };
+    let app2 = app.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let mut lines = Vec::new();
+        let r = libretune_core::protocol::hc_update::run_update(&request, &mut |line| {
+            let _ = app2.emit("firmware-update:log", FirmwareUpdateLogEvent { line: line.to_string() });
+            lines.push(line.to_string());
+        });
+        (r, lines)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    log.extend(outcome.1);
+    if let Err(reason) = outcome.0 {
+        let message = format!(
+            "The update did not complete: {reason}. The ECU keeps running its old firmware unless the log says COMMIT. Saved tune and log: {}",
+            out_dir.display()
+        );
+        push_log(&app, &mut log, message.clone());
+        return Ok(FirmwareUpdateResult { success: false, log, message, should_reconnect: true });
+    }
+    install_bundled_ini(&app, &state, &path, &mut log).await;
+    let message = format!(
+        "Firmware updated, tune kept. Reconnecting. Saved tune and log: {}",
+        out_dir.display()
+    );
+    push_log(&app, &mut log, message.clone());
+    Ok(FirmwareUpdateResult { success: true, log, message, should_reconnect: true })
+}
+
 /// Full firmware update workflow: enter bootloader, flash, return tool output.
 #[tauri::command]
 pub async fn update_ecu_firmware(
@@ -985,6 +1087,9 @@ pub async fn update_ecu_firmware(
     bin_flash_address: Option<String>,
     acknowledge_risk: bool,
 ) -> Result<FirmwareUpdateResult, String> {
+    if method == "hanicore" {
+        return update_hanicore(app, state, PathBuf::from(&firmware_path)).await;
+    }
     if method == "openblt" {
         return Err(
             "Serial (OpenBLT) firmware update is disabled in LibreTune — it can brick your ECU. \

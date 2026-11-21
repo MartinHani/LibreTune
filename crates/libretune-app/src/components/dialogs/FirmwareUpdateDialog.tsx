@@ -46,7 +46,7 @@ export interface FirmwareUpdateDialogProps {
   iniCapabilities: IniCapabilities | null;
 }
 
-type UpdateMethod = 'dfu' | 'openblt';
+type UpdateMethod = 'dfu' | 'openblt' | 'hanicore';
 type DialogMode = 'update' | 'recovery';
 
 export function FirmwareUpdateDialog({
@@ -73,6 +73,8 @@ export function FirmwareUpdateDialog({
 
   const dfuAvailable = !!iniCapabilities?.dfu_command_name;
   const openbltAvailable = !!iniCapabilities?.openblt_command_name;
+  // HaniCore fork: the K-line updater (hc_update) is the only method
+  const hanicore = !!iniCapabilities?.hanicore_update;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -89,10 +91,12 @@ export function FirmwareUpdateDialog({
 
   useEffect(() => {
     if (!isOpen) return;
-    if (dfuAvailable) {
+    if (hanicore) {
+      setMethod('hanicore');
+    } else if (dfuAvailable) {
       setMethod('dfu');
     }
-  }, [isOpen, dfuAvailable, openbltAvailable]);
+  }, [isOpen, dfuAvailable, openbltAvailable, hanicore]);
 
   useEffect(() => {
     if (!isOpen || mode !== 'update') {
@@ -135,7 +139,12 @@ export function FirmwareUpdateDialog({
 
   const browseFirmware = useCallback(async () => {
     const filters =
-      method === 'dfu'
+      method === 'hanicore'
+        ? [
+            { name: 'HaniCore release image', extensions: ['bin'] },
+            { name: 'All Files', extensions: ['*'] },
+          ]
+        : method === 'dfu'
         ? [
             { name: 'Recommended', extensions: ['hex', 'dfu'] },
             { name: 'Raw binary (advanced)', extensions: ['bin'] },
@@ -193,7 +202,9 @@ export function FirmwareUpdateDialog({
   const openbltNeedsObjcopy = method === 'openblt' && isBinFirmware && !flasherInfo?.objcopy;
 
   const canFlash =
-    mode === 'recovery'
+    method === 'hanicore'
+      ? isConnected && !!firmwarePath && isBinFirmware
+      : mode === 'recovery'
       ? bootloaderPath &&
         firmwarePath &&
         binFlashAddress.trim().length > 0 &&
@@ -290,6 +301,37 @@ export function FirmwareUpdateDialog({
           </p>
         </div>
 
+        {hanicore ? (
+          <>
+            <p>
+              HaniCore updates over the same K-line cable: the tune is saved first, the new firmware
+              is streamed into the ECU, the ECU restarts on it and the tune is written back (moved
+              field by field if the page layout changed). About one minute.
+            </p>
+            <div className="firmware-update-field">
+              <label>Firmware (.bin from a HaniCore release - keep its .ini next to it)</label>
+              <div className="firmware-file-row">
+                <code className="firmware-file-path">{firmwarePath ?? 'No file selected'}</code>
+                <Button variant="secondary" onClick={() => void browseFirmware()} disabled={isUpdating}>
+                  Browse…
+                </Button>
+              </div>
+            </div>
+            {!isConnected && (
+              <div className="firmware-update-warning">
+                Connect to the ECU first - the update uses that connection's port and cable mode.
+              </div>
+            )}
+            <div className="firmware-update-warning caution">
+              <AlertTriangle size={16} aria-hidden />
+              <span>
+                Engine off, ignition on, battery connected. Do not switch the ignition off until the
+                log says UPDATE COMPLETE. If it stops half way the ECU keeps its old firmware - run it again.
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
         <div className="firmware-update-field">
           <label>Mode</label>
           <div className="firmware-update-methods">
@@ -600,6 +642,8 @@ export function FirmwareUpdateDialog({
                 </div>
               </>
             )}
+          </>
+        )}
           </>
         )}
 

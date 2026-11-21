@@ -245,7 +245,7 @@ export function buildMenuItems(deps: BuildMenuItemsDeps): TunerMenuItem[] {
         disabled: !currentProject,
       });
     }
-    if (caps.dfu_command_name || caps.openblt_command_name) {
+    if (caps.dfu_command_name || caps.openblt_command_name || caps.hanicore_update) {
       toolItems.push({
         id: "firmware-update",
         label: t('tools.updateFirmware'),
@@ -269,6 +269,17 @@ export function buildMenuItems(deps: BuildMenuItemsDeps): TunerMenuItem[] {
         disabled: !currentProject || status.state !== "Connected",
       });
     }
+  }
+  // HaniCore fork: a HaniCore ECU has no console, and its firmware update
+  // (hc_update over the K-line) does not depend on one
+  if (caps?.hanicore_update && !caps.supports_console) {
+    if (toolItems.length > 0) toolItems.push({ id: "sep2", label: "", separator: true });
+    toolItems.push({
+      id: "firmware-update",
+      label: t('tools.updateFirmware'),
+      onClick: () => setFirmwareUpdateDialogOpen(true),
+      disabled: !currentProject,
+    });
   }
   if (toolItems.length > 0) toolItems.push({ id: "sep3", label: "", separator: true });
   toolItems.push({ id: "compare-tables", label: t('tools.tableCompare'), onClick: () => setTableComparisonOpen(true), disabled: !currentProject });

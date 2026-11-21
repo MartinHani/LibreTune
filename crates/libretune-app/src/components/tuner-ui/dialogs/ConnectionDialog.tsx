@@ -194,6 +194,7 @@ export function ConnectionDialog({
                   <option value={38400}>38400</option>
                   <option value={19200}>19200</option>
                   <option value={9600}>9600</option>
+                  {connectionType !== 'Serial' && <option value={10400}>10400</option>}
                 </select>
               </div>
             </>

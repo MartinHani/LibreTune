@@ -343,7 +343,13 @@ export default function DialogField({
                     onOptimisticUpdate?.(name, originalVal);
                     onUpdate?.();
                   })
-                  .catch((err) => alert('Update failed: ' + err));
+                  .catch((err) => {
+                    // the dialog must show what the ECU holds, not the failed choice
+                    alert('Update failed: ' + err);
+                    invoke<number>('get_constant_value', { name })
+                      .then((v) => setSelectedBit(Math.round(v)))
+                      .catch(() => {});
+                  });
               } else {
                 // Fallback: use the filtered value directly if not in map
                 console.warn(`[DialogField] No original index found for filtered index ${filteredVal}, using directly`);
@@ -353,7 +359,13 @@ export default function DialogField({
                     onOptimisticUpdate?.(name, filteredVal);
                     onUpdate?.();
                   })
-                  .catch((err) => alert('Update failed: ' + err));
+                  .catch((err) => {
+                    // the dialog must show what the ECU holds, not the failed choice
+                    alert('Update failed: ' + err);
+                    invoke<number>('get_constant_value', { name })
+                      .then((v) => setSelectedBit(Math.round(v)))
+                      .catch(() => {});
+                  });
               }
             }}
           >
@@ -422,7 +434,15 @@ export default function DialogField({
                   onOptimisticUpdate?.(name, clamped);
                   onUpdate?.();
                 })
-                .catch((e) => alert('Update failed: ' + e));
+                .catch((e) => {
+                  alert('Update failed: ' + e);
+                  invoke<number>('get_constant_value', { name })
+                    .then((v) => {
+                      setNumValue(v);
+                      setNumInputStr(numText(v));
+                    })
+                    .catch(() => {});
+                });
             } else {
               // Empty/incomplete/invalid input - restore the previous value and
               // write nothing (upstream 2026-11-01 ed23219: a cleared field
